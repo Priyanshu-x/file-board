@@ -35,7 +35,17 @@ from flask_moment import Moment
 load_dotenv()
 
 app = Flask(__name__)
-app.config['UPLOAD_FOLDER'] = 'instance/uploads'
+
+# --- Directory Setup (Absolute Paths) ---
+BASE_DIR = os.path.abspath(os.path.dirname(__file__))
+INSTANCE_DIR = os.path.join(BASE_DIR, 'instance')
+UPLOAD_DIR = os.path.join(INSTANCE_DIR, 'uploads')
+
+os.makedirs(INSTANCE_DIR, exist_ok=True)
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+os.makedirs(os.path.join(UPLOAD_DIR, '_chunks'), exist_ok=True)
+
+app.config['UPLOAD_FOLDER'] = UPLOAD_DIR
 app.config['MAX_CONTENT_LENGTH'] = 1024 * 1024 * 1024
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'super-secret-key')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
@@ -46,7 +56,7 @@ app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
     "pool_recycle": 300,
 }
 
-# Configure logging first
+# Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
@@ -74,7 +84,8 @@ if db_url:
         db_fallback = True
 
 if not db_url or db_fallback:
-    app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///instance/files.db'
+    # Use 4 slashes for absolute path on Linux/Docker
+    app.config['SQLALCHEMY_DATABASE_URI'] = f"sqlite:///{os.path.join(INSTANCE_DIR, 'files.db')}"
     logger.info("Using local SQLite storage (fallback).")
 else:
     app.config['SQLALCHEMY_DATABASE_URI'] = db_url
@@ -87,9 +98,6 @@ csrf = CSRFProtect(app)
 socketio = SocketIO(app, async_mode='gevent', cors_allowed_origins="*")
 login_manager = LoginManager(app)
 login_manager.login_view = 'admin_login'
-
-os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
-os.makedirs('instance', exist_ok=True)
 
 ADMIN_USER = os.getenv('ADMIN_USER', 'admin')
 ADMIN_PASS = os.getenv('ADMIN_PASS', 'admin123')
@@ -195,7 +203,6 @@ def handle_exception(e):
     from sqlalchemy.exc import OperationalError
     if isinstance(e, OperationalError):
         logger.error(f"Database connection error: {e}")
-        # If we hit a connection error at runtime, try to explain it
         return render_template('db_error.html'), 503
     logger.error(f"Unhandled exception: {e}", exc_info=True)
     try:
@@ -341,7 +348,7 @@ def health_check():
         db.session.execute(db.select(File)).first()
         return "OK", 200
     except:
-        return "DEGRADED", 200 # App is running but DB is down
+        return "DEGRADED", 200
 
 if __name__ == '__main__':
     socketio.run(app, debug=True)
