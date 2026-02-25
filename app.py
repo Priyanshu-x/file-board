@@ -46,7 +46,12 @@ os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 ADMIN_USER = os.getenv('ADMIN_USER', 'admin')
 ADMIN_PASS = os.getenv('ADMIN_PASS', 'admin123')
 
-limiter = Limiter(app=app, key_func=get_remote_address, default_limits=["200 per day", "50 per hour"], storage_uri="redis://redis:6379" if os.getenv('REDIS_URL') else "memory://")
+limiter = Limiter(
+    app=app,
+    key_func=get_remote_address,
+    default_limits=["200 per day", "50 per hour"],
+    storage_uri=os.getenv('REDIS_URL', 'memory://')
+)
 
 class User(UserMixin, db.Model):
     id = db.Column(db.Integer, primary_key=True)

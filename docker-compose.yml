@@ -18,6 +18,7 @@ services:
       - ADMIN_USER=admin
       - ADMIN_PASS=admin123
       - MIN_FREE_SPACE_GB=1
+      - REDIS_URL=redis://redis:6379
     volumes:
       - ./instance/uploads:/app/instance/uploads
     depends_on:
