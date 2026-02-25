@@ -61,7 +61,6 @@ limiter = Limiter(
     default_limits=["200 per day", "50 per hour"],
     storage_uri=storage_uri,
     strategy="fixed-window", # Safer strategy for some Redis setups
-    on_connected=lambda: logger.info("Limiter connected to Redis storage."),
 )
 
 class User(UserMixin, db.Model):
