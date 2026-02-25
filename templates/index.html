@@ -27,16 +27,19 @@
         {% endif %}
         {% endwith %}
 
-        <div id="progressContainer" style="display: none;">
-            <div class="progress">
-                <div id="uploadProgress" class="progress-bar" role="progressbar" style="width: 0%;">0%</div>
-            </div>
-        </div>
-
         <form method="post" enctype="multipart/form-data" id="uploadForm" class="card">
             {{ form.hidden_tag() }}
+
+            <div id="progressContainer" style="display: none; margin-bottom: 2rem;">
+                <label class="form-label fw-bold mb-2" id="uploadStatus">Preparing upload...</label>
+                <div class="progress" style="height: 20px;">
+                    <div id="uploadProgress" class="progress-bar progress-bar-striped progress-bar-animated"
+                        role="progressbar" style="width: 0%; background-color: #000;">0%</div>
+                </div>
+            </div>
+
             <div class="drop-zone" id="dropZone">
-                <p>Drag & drop files here or click to select</p>
+                <p class="m-0">Drag & drop files here or click to select</p>
                 <input type="file" name="files[]" id="fileInput" multiple style="display: none;">
             </div>
             <div class="mt-3 text-end">
@@ -95,8 +98,12 @@
             const CHUNK_SIZE = 5 * 1024 * 1024;
             const progressContainer = document.getElementById('progressContainer');
             const progressBar = document.getElementById('uploadProgress');
+            const statusLabel = document.getElementById('uploadStatus');
+            const dropZone = document.getElementById('dropZone');
 
+            // Show progress, hide dropzone
             progressContainer.style.display = 'block';
+            dropZone.style.display = 'none';
 
             const csrfToken = document.querySelector('input[name="csrf_token"]').value;
 
@@ -106,6 +113,8 @@
                 const fileId = crypto.randomUUID();
 
                 for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
+                    statusLabel.innerText = `Uploading ${file.name} (${chunkIndex + 1}/${totalChunks})...`;
+
                     const start = chunkIndex * CHUNK_SIZE;
                     const end = Math.min(start + CHUNK_SIZE, file.size);
                     const chunk = file.slice(start, end);
@@ -123,18 +132,21 @@
                             body: formData,
                             headers: { 'X-CSRFToken': csrfToken }
                         });
-                        if (!response.ok) throw new Error('Upload failed');
+                        if (!response.ok) throw new Error('Upload failed with status ' + response.status);
 
                         const percent = Math.round(((i + (chunkIndex + 1) / totalChunks) / files.length) * 100);
                         progressBar.style.width = percent + '%';
                         progressBar.innerText = percent + '%';
                     } catch (error) {
+                        console.error(error);
                         alert('Upload failed: ' + error.message);
                         progressContainer.style.display = 'none';
+                        dropZone.style.display = 'block';
                         return;
                     }
                 }
             }
+            statusLabel.innerText = "Finalizing upload...";
             window.location.reload();
         });
 
