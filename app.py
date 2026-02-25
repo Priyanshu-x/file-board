@@ -150,11 +150,25 @@ def ratelimit_handler(e):
     flash('Rate limit exceeded.')
     return redirect(url_for('index'))
 
+@app.errorhandler(Exception)
+def handle_exception(e):
+    # Handle SQLAlchemy OperationalError (DNS/Connection issues)
+    from sqlalchemy.exc import OperationalError
+    if isinstance(e, OperationalError):
+        logger.error(f"Database connection error: {e}")
+        return render_template('db_error.html'), 503
+    logger.error(f"Unhandled exception: {e}", exc_info=True)
+    return render_template('500.html'), 500
+
 @app.route('/')
 def index():
     limit_time = (datetime.now() - timedelta(minutes=10)).isoformat()
-    files = File.query.filter((File.is_permanent == 1) | (File.upload_time > limit_time)).all()
-    # Deep copy or creation of a view model instead of mutating DB objects
+    try:
+        files = File.query.filter((File.is_permanent == 1) | (File.upload_time > limit_time)).all()
+    except Exception as e:
+        logger.error(f"Index route DB failure: {e}")
+        return render_template('db_error.html'), 503
+        
     display_files = []
     for f in files:
         display_files.append({

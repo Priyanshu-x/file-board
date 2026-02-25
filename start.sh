@@ -8,9 +8,19 @@ wait_for_dns() {
     
     echo "Attempting to resolve DNS for $host (timeout: ${timeout}s)..."
     
-    until python3 -c "import socket; socket.gethostbyname('$host')" &>/dev/null; do
+    # Try the raw host, then try common Render internal suffixes
+    until python3 -c "import socket; \
+          hosts = ['$host', '$host.render.com', '$host.internal']; \
+          success = False; \
+          for h in hosts: \
+              try: \
+                  socket.gethostbyname(h); \
+                  success = True; \
+                  break; \
+              except: pass; \
+          if not success: exit(1)" &>/dev/null; do
         if [ $elapsed -ge $timeout ]; then
-            echo "WARNING: DNS resolution for $host timed out after ${timeout}s. Proceeding anyway..."
+            echo "WARNING: DNS resolution for $host (and common suffixes) timed out after ${timeout}s."
             return 1
         fi
         echo "DNS $host not ready yet. Retrying in 2s... ($elapsed/${timeout}s)"
@@ -18,7 +28,7 @@ wait_for_dns() {
         elapsed=$((elapsed + 2))
     done
     
-    echo "SUCCESS: DNS $host is resolvable."
+    echo "SUCCESS: DNS for $host (or suffix) is resolvable."
     return 0
 }
 
