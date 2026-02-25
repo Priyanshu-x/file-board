@@ -62,31 +62,57 @@
     </div>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.5.0/socket.io.js"></script>
     <script>
-        document.getElementById('uploadForm').addEventListener('submit', function (e) {
+        document.getElementById('uploadForm').addEventListener('submit', async function (e) {
             e.preventDefault();
             const form = this;
             const files = form.querySelector('input[type="file"]').files;
+            if (files.length === 0) return;
+
+            const CHUNK_SIZE = 5 * 1024 * 1024; // 5MB chunks
+            const progressBar = document.getElementById('uploadProgress');
+            const progressContainer = document.querySelector('.progress');
+            progressContainer.style.display = 'block';
+
+            const csrfToken = document.querySelector('input[name="csrf_token"]').value;
+
             for (let i = 0; i < files.length; i++) {
-                if (files[i].size > 1024 * 1024 * 1024) {
-                    alert('One or more files are too large! Max 1GB per file.');
-                    return;
+                const file = files[i];
+                const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
+                const fileId = crypto.randomUUID();
+
+                for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
+                    const start = chunkIndex * CHUNK_SIZE;
+                    const end = Math.min(start + CHUNK_SIZE, file.size);
+                    const chunk = file.slice(start, end);
+
+                    const formData = new FormData();
+                    formData.append('file', chunk);
+                    formData.append('file_id', fileId);
+                    formData.append('chunk_index', chunkIndex);
+                    formData.append('total_chunks', totalChunks);
+                    formData.append('filename', file.name);
+
+                    try {
+                        const response = await fetch('/upload_chunk', {
+                            method: 'POST',
+                            body: formData,
+                            headers: {
+                                'X-CSRFToken': csrfToken
+                            }
+                        });
+                        if (!response.ok) throw new Error('Upload failed');
+
+                        const percent = Math.round(((i + (chunkIndex + 1) / totalChunks) / files.length) * 100);
+                        progressBar.style.width = percent + '%';
+                        progressBar.innerText = percent + '%';
+                    } catch (error) {
+                        alert('Upload failed: ' + error.message);
+                        progressContainer.style.display = 'none';
+                        return;
+                    }
                 }
             }
-            const xhr = new XMLHttpRequest();
-            xhr.upload.addEventListener('progress', function (e) {
-                if (e.lengthComputable) {
-                    const percent = (e.loaded / e.total) * 100;
-                    const progressBar = document.getElementById('uploadProgress');
-                    progressBar.style.width = percent + '%';
-                    progressBar.innerText = Math.round(percent) + '%';
-                    document.querySelector('.progress').style.display = 'block';
-                }
-            });
-            xhr.addEventListener('load', function () {
-                window.location.reload();
-            });
-            xhr.open('POST', '/upload');
-            xhr.send(new FormData(form));
+            window.location.reload();
         });
 
         const socket = io();

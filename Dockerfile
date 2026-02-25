@@ -1,4 +1,4 @@
-FROM python:3.9-slim
+FROM python:3.11-slim
 
 WORKDIR /app
 
@@ -6,6 +6,7 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y \
     gcc \
     libpq-dev \
+    nginx \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
@@ -13,9 +14,16 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
+# Setup Nginx
+COPY nginx.conf /etc/nginx/sites-available/default
+RUN ln -sf /etc/nginx/sites-available/default /etc/nginx/sites-enabled/default
+
 # Create uploads directory (if not exists) and set permissions
 RUN mkdir -p instance/uploads && chmod 777 instance/uploads
 
-EXPOSE 5000
+# Make start script executable
+RUN chmod +x start.sh
 
-CMD ["gunicorn", "-w", "1", "-k", "gevent", "--worker-connections", "1000", "--bind", "0.0.0.0:5000", "app:app"]
+EXPOSE 80
+
+CMD ["./start.sh"]

@@ -86,7 +86,7 @@ def delete_expired_files():
 
 scheduler = BackgroundScheduler()
 scheduler.add_job(delete_expired_files, 'interval', minutes=1)
-scheduler.start()
+# Removed scheduler.start() from here
 
 with app.app_context():
     try:
@@ -99,6 +99,12 @@ with app.app_context():
             db.session.commit()
             logger.info(f"Admin user '{ADMIN_USER}' created/verified.")
         logger.info("Database tables created successfully.")
+        
+        # Start scheduler after DB is ready
+        if not scheduler.running:
+            scheduler.start()
+            logger.info("Background scheduler started.")
+            
     except Exception as e:
         logger.error(f"Error creating database tables or admin user: {e}", exc_info=True)
 
@@ -191,6 +197,43 @@ def upload_file():
     
     return redirect(url_for('index'))
 
+@app.route('/upload_chunk', methods=['POST'])
+@limiter.limit("100 per minute")
+def upload_chunk():
+    file_id = request.form.get('file_id')
+    chunk_index = int(request.form.get('chunk_index'))
+    total_chunks = int(request.form.get('total_chunks'))
+    filename = secure_filename(request.form.get('filename'))
+    file_chunk = request.files['file']
+
+    chunk_dir = os.path.join(app.config['UPLOAD_FOLDER'], "_chunks", file_id)
+    os.makedirs(chunk_dir, exist_ok=True)
+    
+    chunk_path = os.path.join(chunk_dir, str(chunk_index))
+    file_chunk.save(chunk_path)
+
+    # Check if all chunks are uploaded
+    if len(os.listdir(chunk_dir)) == total_chunks:
+        final_path = os.path.join(app.config['UPLOAD_FOLDER'], file_id)
+        with open(final_path, 'wb') as target_file:
+            for i in range(total_chunks):
+                chunk_file_path = os.path.join(chunk_dir, str(i))
+                with open(chunk_file_path, 'rb') as f:
+                    target_file.write(f.read())
+                os.remove(chunk_file_path)
+        
+        os.rmdir(chunk_dir)
+        
+        upload_time = datetime.now().isoformat()
+        new_file = File(id=file_id, filename=filename, upload_time=upload_time, is_permanent=0)
+        db.session.add(new_file)
+        db.session.commit()
+        
+        socketio.emit('new_file', {'id': file_id, 'filename': filename, 'upload_time': upload_time})
+        return {"status": "finished"}, 200
+
+    return {"status": "chunk_received"}, 200
+
 @app.route('/download/<file_id>')
 def download_file(file_id):
     file_obj = File.query.get(file_id)
@@ -205,14 +248,12 @@ def download_file(file_id):
         return redirect(url_for('index'))
     
     filename = file_obj.filename
-    file_path = os.path.join(app.config['UPLOAD_FOLDER'], file_id)
-    if not os.path.exists(file_path):
-        logger.error(f'File {file_id} found in DB but not on disk at {file_path}.')
-        flash('File not found')
-        return redirect(url_for('index'))
-    
-    logger.info(f'File {filename} ({file_id}) downloaded.')
-    return send_file(file_path, as_attachment=True, download_name=filename)
+    # Use X-Accel-Redirect to let Nginx serve the file efficiently
+    response = app.make_response("")
+    response.headers['X-Accel-Redirect'] = f'/internal_uploads/{file_id}'
+    response.headers['Content-Type'] = 'application/octet-stream'
+    response.headers['Content-Disposition'] = f'attachment; filename="{filename}"'
+    return response
 
 @app.route('/admin', methods=['GET'])
 @login_required

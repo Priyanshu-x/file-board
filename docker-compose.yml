@@ -1,10 +1,17 @@
-version: '3.8'
-
 services:
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./instance/uploads:/app/instance/uploads:ro
+    depends_on:
+      - web
+
   web:
     build: .
-    ports:
-      - "5000:5000"
+    # Removed direct port mapping, using Nginx instead
     environment:
       - SECRET_KEY=dev-secret-key-change-in-prod
       - DATABASE_URL=postgresql://snapdoc:password@db:5432/snapdoc
