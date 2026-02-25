@@ -1,3 +1,6 @@
+from gevent import monkey
+monkey.patch_all()
+
 import os
 import uuid
 import shutil
@@ -46,11 +49,19 @@ os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 ADMIN_USER = os.getenv('ADMIN_USER', 'admin')
 ADMIN_PASS = os.getenv('ADMIN_PASS', 'admin123')
 
+# Try to initialize limiter with Redis, fallback to memory if connection fails
+storage_uri = os.getenv('REDIS_URL')
+if not storage_uri:
+    storage_uri = "memory://"
+    logger.warning("REDIS_URL not found, falling back to memory storage for limiter.")
+
 limiter = Limiter(
     app=app,
     key_func=get_remote_address,
     default_limits=["200 per day", "50 per hour"],
-    storage_uri=os.getenv('REDIS_URL', 'memory://')
+    storage_uri=storage_uri,
+    strategy="fixed-window", # Safer strategy for some Redis setups
+    on_connected=lambda: logger.info("Limiter connected to Redis storage."),
 )
 
 class User(UserMixin, db.Model):
