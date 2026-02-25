@@ -21,10 +21,6 @@ services:
           property: connectionString
       - key: MIN_FREE_SPACE_GB
         value: 1
-    disk:
-      name: uploads
-      mountPath: /app/instance/uploads
-      sizeGB: 1
 
   - type: redis
     name: snapdoc-redis
