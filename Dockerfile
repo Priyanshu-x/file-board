@@ -9,19 +9,21 @@ RUN apt-get update && apt-get install -y \
     nginx \
     && rm -rf /var/lib/apt/lists/*
 
+# Pre-create necessary directories
+RUN mkdir -p /app/instance/uploads /app/static /app/instance/uploads/_chunks
+
+# Install Python dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Copy application files
 COPY . .
 
 # Setup Nginx
 COPY nginx.conf /etc/nginx/sites-available/default
 RUN ln -sf /etc/nginx/sites-available/default /etc/nginx/sites-enabled/default
 
-# Create uploads directory (if not exists) and set permissions
-RUN mkdir -p instance/uploads && chmod 777 instance/uploads
-
-# Make start script executable
+# Fix permissions
 RUN chmod +x start.sh
 
 EXPOSE 80

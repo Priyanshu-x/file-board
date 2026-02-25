@@ -1,6 +1,13 @@
 from gevent import monkey
 monkey.patch_all()
 
+# Patch psycopg2 for gevent
+try:
+    from psycogreen.gevent import patch_psycopg
+    patch_psycopg()
+except ImportError:
+    pass
+
 import os
 import uuid
 import shutil
@@ -31,6 +38,13 @@ app.config['MAX_CONTENT_LENGTH'] = 1024 * 1024 * 1024
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'super-secret-key')
 app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL', 'sqlite:///files.db')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+
+# Robust Engine Options for Production
+app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
+    "pool_pre_ping": True,
+    "pool_recycle": 300,
+}
+
 db = SQLAlchemy(app)
 moment = Moment(app)
 csrf = CSRFProtect(app)
@@ -41,26 +55,23 @@ login_manager.login_view = 'admin_login'
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
-logger.info(f"SECRET_KEY loaded: {'*****' if app.config['SECRET_KEY'] else 'Not Set (using default)'}")
-# Sanitize database URL for logging (hide password)
-db_url = app.config['SQLALCHEMY_DATABASE_URI']
-if '@' in db_url:
-    safe_db_url = db_url.split('@')[0].rsplit(':', 1)[0] + ':****@' + db_url.split('@')[1]
-else:
-    safe_db_url = db_url
-logger.info(f"DATABASE_URL loaded: {safe_db_url}")
+
+# Sanitize sensitive logs
+def get_safe_url(url):
+    if not url: return "None"
+    if '@' in url:
+        return url.split('@')[0].rsplit(':', 1)[0] + ':****@' + url.split('@')[1]
+    return url
+
+logger.info(f"SECRET_KEY loaded: {'*****' if app.config['SECRET_KEY'] else 'Not Set'}")
+logger.info(f"DATABASE_URL loaded: {get_safe_url(app.config['SQLALCHEMY_DATABASE_URI'])}")
 
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
 ADMIN_USER = os.getenv('ADMIN_USER', 'admin')
 ADMIN_PASS = os.getenv('ADMIN_PASS', 'admin123')
 
-# Try to initialize limiter with Redis, fallback to memory if connection fails
-storage_uri = os.getenv('REDIS_URL')
-if not storage_uri:
-    storage_uri = "memory://"
-    logger.warning("REDIS_URL not found, falling back to memory storage for limiter.")
-
+storage_uri = os.getenv('REDIS_URL', 'memory://')
 limiter = Limiter(
     app=app,
     key_func=get_remote_address,
@@ -89,48 +100,37 @@ class File(db.Model):
     upload_time = db.Column(db.String, nullable=False)
     is_permanent = db.Column(db.Integer, default=0)
 
-    def __repr__(self):
-        return f'<File {self.filename}>'
-
 @login_manager.user_loader
 def load_user(user_id):
     return User.query.get(int(user_id))
 
 def delete_expired_files():
     with app.app_context():
-        ten_minutes_ago = datetime.now() - timedelta(minutes=15)
-        expired_files = File.query.filter(File.upload_time < ten_minutes_ago.isoformat(), File.is_permanent == 0).all()
+        limit_time = (datetime.now() - timedelta(minutes=15)).isoformat()
+        expired_files = File.query.filter(File.upload_time < limit_time, File.is_permanent == 0).all()
         for file_obj in expired_files:
             file_path = os.path.join(app.config['UPLOAD_FOLDER'], file_obj.id)
             if os.path.exists(file_path):
                 os.remove(file_path)
             db.session.delete(file_obj)
-            db.session.commit() # Commit deletion before emitting to ensure consistency
+            db.session.commit()
             socketio.emit('file_deleted', {'id': file_obj.id})
 
 scheduler = BackgroundScheduler()
 scheduler.add_job(delete_expired_files, 'interval', minutes=1)
-# Removed scheduler.start() from here
 
 with app.app_context():
     try:
         db.create_all()
-        # Create Admin User
         if not User.query.filter_by(username=ADMIN_USER).first():
             admin = User(username=ADMIN_USER)
             admin.set_password(ADMIN_PASS)
             db.session.add(admin)
             db.session.commit()
-            logger.info(f"Admin user '{ADMIN_USER}' created/verified.")
-        logger.info("Database tables created successfully.")
-        
-        # Start scheduler after DB is ready
         if not scheduler.running:
             scheduler.start()
-            logger.info("Background scheduler started.")
-            
     except Exception as e:
-        logger.error(f"Error creating database tables or admin user: {e}", exc_info=True)
+        logger.error(f"Post-boot initialization failed: {e}")
 
 class UploadForm(FlaskForm):
     submit = SubmitField('Upload')
@@ -142,87 +142,30 @@ class AdminLoginForm(FlaskForm):
 
 @app.errorhandler(RequestEntityTooLarge)
 def handle_too_large(e):
-    logger.warning(f"Request entity too large: {e}")
-    flash('File too large. Maximum size is 1GB.')
+    flash('File too large (Max 1GB).')
     return redirect(url_for('index'))
 
 @app.errorhandler(429)
 def ratelimit_handler(e):
-    logger.warning(f"Rate limit exceeded for IP: {get_remote_address()}")
-    flash('Too many uploads. Please try again in a minute.')
+    flash('Rate limit exceeded.')
     return redirect(url_for('index'))
-
-@app.errorhandler(404)
-def page_not_found(e):
-    logger.warning(f"404 Not Found: {request.path}")
-    return render_template('404.html'), 404
-
-@app.errorhandler(500)
-def internal_server_error(e):
-    logger.error(f"500 Internal Server Error: {e}", exc_info=True)
-    return render_template('500.html'), 500
 
 @app.route('/')
 def index():
-    ten_minutes_ago = (datetime.now() - timedelta(minutes=10)).isoformat()
-    files = File.query.filter((File.is_permanent == 1) | (File.upload_time > ten_minutes_ago)).all()
-    # Convert upload_time strings to datetime objects for Flask-Moment
-    for file_obj in files:
-        file_obj.upload_time = datetime.fromisoformat(file_obj.upload_time)
-    return render_template('index.html', files=files, form=UploadForm())
-
-@app.route('/upload', methods=['POST'])
-@limiter.limit("5 per minute")
-def upload_file():
-    if 'files[]' not in request.files:
-        logger.warning('No files part in the request.')
-        flash('No files selected')
-        return redirect(url_for('index'))
-    
-    files = request.files.getlist('files[]')
-    if not files or all(f.filename == '' for f in files):
-        logger.warning('No selected file for upload.')
-        flash('No file selected')
-        return redirect(url_for('index'))
-
-    MIN_FREE_SPACE_GB = int(os.getenv('MIN_FREE_SPACE_GB', 2)) # Default to 2 GB
-    total, used, free = shutil.disk_usage(app.config['UPLOAD_FOLDER'])
-    if free < MIN_FREE_SPACE_GB * 1024 * 1024 * 1024:
-        logger.error(f'Server storage low. Free space: {free / (1024**3):.2f} GB. Required: {MIN_FREE_SPACE_GB} GB.')
-        flash(f'Server storage low. Please try again later. Minimum free space required: {MIN_FREE_SPACE_GB} GB.')
-        return redirect(url_for('index'))
-
-    uploaded_count = 0
-    for file in files:
-        if file.filename == '':
-            continue
-        
-        file_id = str(uuid.uuid4())
-        filename = secure_filename(file.filename)
-        file_path = os.path.join(app.config['UPLOAD_FOLDER'], file_id)
-        try:
-            file.save(file_path)
-            upload_time = datetime.now().isoformat()
-            new_file = File(id=file_id, filename=filename, upload_time=upload_time, is_permanent=0)
-            db.session.add(new_file)
-            db.session.commit()
-            
-            socketio.emit('new_file', {'id': file_id, 'filename': filename, 'upload_time': upload_time})
-            logger.info(f'File {filename} ({file_id}) uploaded successfully.')
-            uploaded_count += 1
-        except Exception as e:
-            logger.error(f'Error uploading file {filename} ({file_id}): {e}')
-            flash(f'Error uploading {filename}. Please try again.')
-    
-    if uploaded_count > 0:
-        flash(f'{uploaded_count} file(s) uploaded successfully')
-    else:
-        flash('No files were uploaded.')
-    
-    return redirect(url_for('index'))
+    limit_time = (datetime.now() - timedelta(minutes=10)).isoformat()
+    files = File.query.filter((File.is_permanent == 1) | (File.upload_time > limit_time)).all()
+    # Deep copy or creation of a view model instead of mutating DB objects
+    display_files = []
+    for f in files:
+        display_files.append({
+            'id': f.id,
+            'filename': f.filename,
+            'upload_time': datetime.fromisoformat(f.upload_time)
+        })
+    return render_template('index.html', files=display_files, form=UploadForm())
 
 @app.route('/upload_chunk', methods=['POST'])
-@limiter.limit("100 per minute")
+@limiter.limit("200 per minute")
 def upload_chunk():
     file_id = request.form.get('file_id')
     chunk_index = int(request.form.get('chunk_index'))
@@ -236,93 +179,74 @@ def upload_chunk():
     chunk_path = os.path.join(chunk_dir, str(chunk_index))
     file_chunk.save(chunk_path)
 
-    # Check if all chunks are uploaded
     if len(os.listdir(chunk_dir)) == total_chunks:
         final_path = os.path.join(app.config['UPLOAD_FOLDER'], file_id)
-        
-        # Double-check to prevent race condition if two requests hit this simultaneously
         if not os.path.exists(final_path):
+            temp_final = final_path + ".tmp"
             try:
-                with open(final_path, 'wb') as target_file:
+                with open(temp_final, 'wb') as target_file:
                     for i in range(total_chunks):
-                        chunk_file_path = os.path.join(chunk_dir, str(i))
-                        with open(chunk_file_path, 'rb') as f:
+                        c_path = os.path.join(chunk_dir, str(i))
+                        with open(c_path, 'rb') as f:
                             target_file.write(f.read())
-                        os.remove(chunk_file_path)
+                os.replace(temp_final, final_path) # Atomic Rename
+                shutil.rmtree(chunk_dir)
                 
-                os.rmdir(chunk_dir)
-                
-                upload_time = datetime.now().isoformat()
-                new_file = File(id=file_id, filename=filename, upload_time=upload_time, is_permanent=0)
+                new_file = File(id=file_id, filename=filename, upload_time=datetime.now().isoformat(), is_permanent=0)
                 db.session.add(new_file)
                 db.session.commit()
-                
-                socketio.emit('new_file', {'id': file_id, 'filename': filename, 'upload_time': upload_time})
+                socketio.emit('new_file', {'id': file_id, 'filename': filename, 'upload_time': new_file.upload_time})
                 return {"status": "finished"}, 200
             except Exception as e:
-                logger.error(f"Error joining chunks for {file_id}: {e}")
-                return {"status": "error", "message": "Failed to assemble file"}, 500
-        else:
-            return {"status": "finished"}, 200
-
+                if os.path.exists(temp_final): os.remove(temp_final)
+                return {"status": "error", "message": str(e)}, 500
+        return {"status": "finished"}, 200
     return {"status": "chunk_received"}, 200
 
 @app.route('/download/<file_id>')
 def download_file(file_id):
     file_obj = File.query.get(file_id)
     if not file_obj:
-        logger.warning(f'Attempted download of non-existent or expired file: {file_id}')
-        flash('File not found or expired')
+        flash('File not found')
         return redirect(url_for('index'))
     
-    if not file_obj.is_permanent and datetime.fromisoformat(file_obj.upload_time) < datetime.now() - timedelta(minutes=10):
-        logger.warning(f'Attempted download of expired file: {file_id}')
-        flash('File has expired')
-        return redirect(url_for('index'))
-    
-    filename = file_obj.filename
-    # Use X-Accel-Redirect to let Nginx serve the file efficiently
     response = app.make_response("")
     response.headers['X-Accel-Redirect'] = f'/internal_uploads/{file_id}'
-    response.headers['Content-Type'] = 'application/octet-stream'
-    response.headers['Content-Disposition'] = f'attachment; filename="{filename}"'
+    response.headers['Content-Disposition'] = f'attachment; filename="{file_obj.filename}"'
     return response
 
-@app.route('/admin', methods=['GET'])
+@app.route('/admin')
 @login_required
 def admin_panel():
     files = File.query.all()
-    # Convert upload_time strings to datetime objects for Flask-Moment
-    for file_obj in files:
-        file_obj.upload_time = datetime.fromisoformat(file_obj.upload_time)
-    total, used, free = shutil.disk_usage(app.config['UPLOAD_FOLDER'])
-    storage_info = {
-        'used': f'{used / (1024**3):.2f} GB',
-        'free': f'{free / (1024**3):.2f} GB'
-    }
-    return render_template('admin.html', files=files, storage_info=storage_info)
+    display_files = []
+    for f in files:
+        display_files.append({
+            'id': f.id,
+            'filename': f.filename,
+            'upload_time': datetime.fromisoformat(f.upload_time),
+            'is_permanent': f.is_permanent
+        })
+    _, used, free = shutil.disk_usage(app.config['UPLOAD_FOLDER'])
+    storage_info = {'used': f'{used / (1024**3):.2f} GB', 'free': f'{free / (1024**3):.2f} GB'}
+    return render_template('admin.html', files=display_files, storage_info=storage_info)
 
 @app.route('/admin/login', methods=['GET', 'POST'])
 def admin_login():
-    if current_user.is_authenticated:
-        return redirect(url_for('admin_panel'))
+    if current_user.is_authenticated: return redirect(url_for('admin_panel'))
     form = AdminLoginForm()
     if form.validate_on_submit():
         user = User.query.filter_by(username=form.username.data).first()
         if user and user.check_password(form.password.data):
             login_user(user)
-            flash('Logged in successfully.', 'success')
-            next_page = request.args.get('next')
-            return redirect(next_page or url_for('admin_panel'))
-        else:
-            flash('Invalid username or password.', 'danger')
+            return redirect(url_for('admin_panel'))
+        flash('Invalid login')
     return render_template('admin_login.html', form=form)
 
 @app.route('/admin/logout')
 @login_required
 def admin_logout():
     logout_user()
-    flash('Logged out successfully.')
     return redirect(url_for('admin_login'))
 
 @app.route('/admin/manage', methods=['POST'])
@@ -334,30 +258,22 @@ def admin_manage():
     if file_obj:
         if action == 'delete':
             file_path = os.path.join(app.config['UPLOAD_FOLDER'], file_id)
-            if os.path.exists(file_path):
-                os.remove(file_path)
-                logger.info(f'Admin deleted file from disk: {file_obj.filename} ({file_id})')
+            if os.path.exists(file_path): os.remove(file_path)
             db.session.delete(file_obj)
             db.session.commit()
             socketio.emit('file_deleted', {'id': file_id})
-            flash('File deleted')
-            logger.info(f'Admin deleted file record: {file_obj.filename} ({file_id})')
         elif action == 'make_permanent':
             file_obj.is_permanent = 1
             db.session.commit()
-            flash('File marked as permanent')
-            logger.info(f'Admin marked file as permanent: {file_obj.filename} ({file_id})')
     return redirect(url_for('admin_panel'))
 
 @app.route('/health')
 def health_check():
     try:
-        # Attempt to query the database to check connection
-        db.session.query(File).first()
+        db.session.execute(db.select(File)).first()
         return "OK", 200
-    except Exception as e:
-        logger.error(f"Health check failed: {e}", exc_info=True)
-        return "Error", 500
+    except:
+        return "ERROR", 500
 
 if __name__ == '__main__':
     socketio.run(app, debug=True)
