@@ -68,7 +68,6 @@ limiter = Limiter(
     storage_uri=storage_uri,
     strategy="fixed-window",
     storage_options={"socket_connect_timeout": 30},
-    on_connected=None,
     swallow_errors=True,
     in_memory_fallback_enabled=True,
 )
