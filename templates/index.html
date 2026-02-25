@@ -4,73 +4,114 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Public File Board</title>
+    <title>SnapDoc | Premium File Sharing</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/moment.js/2.29.1/moment.min.js"></script>
 </head>
 
 <body>
-    <div class="container mt-5">
-        <h1>File Board</h1>
-        <p>Upload files to share publicly. Files auto-delete after 15 minutes unless saved by admin.</p>
-        {% with messages = get_flashed_messages() %}
-        {% if messages %}
-        <div class="alert alert-info">
-            {% for message in messages %}
-            {{ message }}<br>
-            {% endfor %}
-        </div>
-        {% endif %}
-        {% endwith %}
+    <div class="container py-5">
+        <div class="row justify-content-center">
+            <div class="col-lg-10 animate-fade-in">
+                <header class="text-center mb-5">
+                    <h1 class="header-title">SnapDoc</h1>
+                    <p class="sub-header mx-auto">Lightning-fast, ephemeral file sharing. Public files vanish in 15
+                        minutes unless secured by an admin.</p>
+                </header>
 
-        <div class="progress mb-3" style="display: none;">
-            <div class="progress-bar" role="progressbar" id="uploadProgress" style="width: 0%;"></div>
-        </div>
-
-        <form method="post" enctype="multipart/form-data" id="uploadForm">
-            {{ form.hidden_tag() }}
-            <div class="mb-3">
-                <input type="file" name="files[]" class="form-control" multiple>
-            </div>
-            {{ form.submit(class="btn btn-primary") }}
-        </form>
-
-        <h3>Available Files</h3>
-        {% if files %}
-        <table class="table table-striped" id="fileTable">
-            <thead>
-                <tr>
-                    <th>File Name</th>
-                    <th>Uploaded</th>
-                    <th>Action</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for file in files %}
-                <tr data-file-id="{{ file.id }}">
-                    <td>{{ file.filename|e }}</td>
-                    <td>{{ moment(file.upload_time).format('YYYY-MM-DD HH:mm:ss') }}</td>
-                    <td><a href="{{ url_for('download_file', file_id=file.id) }}"
-                            class="btn btn-sm btn-success">Download</a></td>
-                </tr>
+                {% with messages = get_flashed_messages() %}
+                {% if messages %}
+                {% for message in messages %}
+                <div class="alert glass-card border-info text-info mb-4 py-2 px-3 small">
+                    {{ message }}
+                </div>
                 {% endfor %}
-            </tbody>
-        </table>
-        {% else %}
-        <p>No files available.</p>
-        {% endif %}
+                {% endif %}
+                {% endwith %}
+
+                <div class="glass-card mb-5">
+                    <div class="custom-progress" style="display: none;" id="progressContainer">
+                        <div class="custom-progress-bar" id="uploadProgress"></div>
+                    </div>
+
+                    <form method="post" enctype="multipart/form-data" id="uploadForm">
+                        {{ form.hidden_tag() }}
+                        <div class="drop-zone" id="dropZone">
+                            <span class="drop-zone-icon">🚀</span>
+                            <h4 class="mb-2">Drop files here or click to upload</h4>
+                            <p class="text-secondary small">Individual files up to 1GB</p>
+                            <input type="file" name="files[]" class="custom-file-input" id="fileInput" multiple>
+                        </div>
+                        <div class="text-center mt-4">
+                            <button type="submit" class="premium-btn px-5">Start Secure Upload</button>
+                        </div>
+                    </form>
+                </div>
+
+                <div class="file-list">
+                    <div class="d-flex justify-content-between align-items-center mb-4">
+                        <h3 class="fw-bold m-0">Available Files</h3>
+                        <span class="stat-chip" id="fileCount">{{ files|length }} Active Documents</span>
+                    </div>
+
+                    <div id="fileTable">
+                        {% if files %}
+                        {% for file in files %}
+                        <div class="file-row" data-file-id="{{ file.id }}">
+                            <div class="file-info">
+                                <span class="file-name">{{ file.filename|e }}</span>
+                                <span class="file-meta" data-time="{{ file.upload_time }}">
+                                    Uploaded {{ moment(file.upload_time).fromNow() }}
+                                </span>
+                            </div>
+                            <div class="file-actions">
+                                <a href="{{ url_for('download_file', file_id=file.id) }}"
+                                    class="premium-btn premium-btn-secondary py-2 px-4">Download</a>
+                            </div>
+                        </div>
+                        {% endfor %}
+                        {% else %}
+                        <div class="glass-card text-center py-5 no-files">
+                            <p class="text-secondary m-0">No files currently available in the public pool.</p>
+                        </div>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+        </div>
     </div>
+
     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.5.0/socket.io.js"></script>
     <script>
+        const dropZone = document.getElementById('dropZone');
+        const fileInput = document.getElementById('fileInput');
+
+        dropZone.addEventListener('click', () => fileInput.click());
+
+        ['dragover', 'dragleave', 'drop'].forEach(evt => {
+            dropZone.addEventListener(evt, (e) => {
+                e.preventDefault();
+                if (evt === 'dragover') dropZone.classList.add('dragover');
+                else dropZone.classList.remove('dragover');
+            });
+        });
+
+        dropZone.addEventListener('drop', (e) => {
+            fileInput.files = e.dataTransfer.files;
+        });
+
         document.getElementById('uploadForm').addEventListener('submit', async function (e) {
             e.preventDefault();
-            const form = this;
-            const files = form.querySelector('input[type="file"]').files;
+            const files = fileInput.files;
             if (files.length === 0) return;
 
             const CHUNK_SIZE = 5 * 1024 * 1024; // 5MB chunks
             const progressBar = document.getElementById('uploadProgress');
-            const progressContainer = document.querySelector('.progress');
+            const progressContainer = document.getElementById('progressContainer');
             progressContainer.style.display = 'block';
 
             const csrfToken = document.querySelector('input[name="csrf_token"]').value;
@@ -96,15 +137,12 @@
                         const response = await fetch('/upload_chunk', {
                             method: 'POST',
                             body: formData,
-                            headers: {
-                                'X-CSRFToken': csrfToken
-                            }
+                            headers: { 'X-CSRFToken': csrfToken }
                         });
                         if (!response.ok) throw new Error('Upload failed');
 
                         const percent = Math.round(((i + (chunkIndex + 1) / totalChunks) / files.length) * 100);
                         progressBar.style.width = percent + '%';
-                        progressBar.innerText = percent + '%';
                     } catch (error) {
                         alert('Upload failed: ' + error.message);
                         progressContainer.style.display = 'none';
@@ -117,34 +155,44 @@
 
         const socket = io();
         socket.on('new_file', function (file) {
-            const table = document.querySelector('#fileTable tbody');
-            const uploadTime = moment(file.upload_time).format('YYYY-MM-DD HH:mm:ss');
+            const container = document.getElementById('fileTable');
+            const noFiles = container.querySelector('.no-files');
+            if (noFiles) noFiles.remove();
 
-            const tr = document.createElement('tr');
-            tr.setAttribute('data-file-id', file.id);
-
-            const tdName = document.createElement('td');
-            tdName.innerText = file.filename;
-
-            const tdTime = document.createElement('td');
-            tdTime.innerText = uploadTime;
-
-            const tdAction = document.createElement('td');
-            const link = document.createElement('a');
-            link.href = `/download/${file.id}`;
-            link.className = 'btn btn-sm btn-success';
-            link.innerText = 'Download';
-            tdAction.appendChild(link);
-
-            tr.appendChild(tdName);
-            tr.appendChild(tdTime);
-            tr.appendChild(tdAction);
-
-            table.appendChild(tr);
+            const timeLabel = moment(file.upload_time).fromNow();
+            const html = `
+                <div class="file-row" data-file-id="${file.id}" style="animation: fadeIn 0.5s ease forwards">
+                    <div class="file-info">
+                        <span class="file-name">${file.filename}</span>
+                        <span class="file-meta">Uploaded moments ago</span>
+                    </div>
+                    <div class="file-actions">
+                        <a href="/download/${file.id}" class="premium-btn premium-btn-secondary py-2 px-4">Download</a>
+                    </div>
+                </div>
+            `;
+            container.insertAdjacentHTML('afterbegin', html);
+            document.getElementById('fileCount').innerText = container.querySelectorAll('.file-row').length + ' Active Documents';
         });
+
         socket.on('file_deleted', function (data) {
-            const row = document.querySelector(`tr[data-file-id="${data.id}"]`);
-            if (row) row.remove();
+            const row = document.querySelector(`div[data-file-id="${data.id}"]`);
+            if (row) {
+                row.style.opacity = '0';
+                row.style.transform = 'translateY(10px)';
+                setTimeout(() => {
+                    row.remove();
+                    const container = document.getElementById('fileTable');
+                    if (container.querySelectorAll('.file-row').length === 0) {
+                        container.innerHTML = `
+                            <div class="glass-card text-center py-5 no-files">
+                                <p class="text-secondary m-0">No files currently available in the public pool.</p>
+                            </div>
+                        `;
+                    }
+                    document.getElementById('fileCount').innerText = container.querySelectorAll('.file-row').length + ' Active Documents';
+                }, 500);
+            }
         });
     </script>
 </body>
