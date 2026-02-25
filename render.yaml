@@ -17,13 +17,13 @@ services:
       - key: REDIS_URL
         fromService:
           type: redis
-          name: snapdoc-redis
+          name: fileboard-redis
           property: connectionString
       - key: MIN_FREE_SPACE_GB
         value: 1
 
   - type: redis
-    name: snapdoc-redis
+    name: fileboard-redis
     plan: free
     ipAllowList: [] # Internal only
 

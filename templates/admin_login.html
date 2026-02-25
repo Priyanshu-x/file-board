@@ -4,79 +4,46 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SnapDoc Admin | Secure Login</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <title>Login - File Board</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
     <style>
-        .login-container {
-            min-height: 100vh;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-        }
-
         .login-card {
-            width: 100%;
-            max-width: 450px;
-        }
-
-        .form-control {
-            background: rgba(255, 255, 255, 0.03);
-            border: 1px solid var(--border-color);
-            color: white;
-            padding: 0.8rem 1.2rem;
-            border-radius: 12px;
-        }
-
-        .form-control:focus {
-            background: rgba(255, 255, 255, 0.05);
-            border-color: var(--accent-color);
-            color: white;
-            box-shadow: 0 0 15px rgba(59, 130, 246, 0.2);
+            max-width: 400px;
+            margin: 100px auto;
         }
     </style>
 </head>
 
 <body>
-    <div class="login-container px-3">
-        <div class="login-card glass-card animate-fade-in">
-            <header class="text-center mb-4">
-                <span class="fs-1 mb-2 d-block">🔒</span>
-                <h2 class="fw-bold">Admin Portal</h2>
-                <p class="text-secondary small">Access restricted to authorized supervisors</p>
-            </header>
-
+    <div class="container">
+        <div class="card login-card">
+            <h2 class="text-center mb-4">File Board Login</h2>
             {% with messages = get_flashed_messages() %}
             {% if messages %}
-            {% for message in messages %}
-            <div class="alert glass-card border-danger text-danger mb-4 py-2 px-3 small">
+            <div class="alert alert-danger">
+                {% for message in messages %}
                 {{ message }}
+                {% endfor %}
             </div>
-            {% endfor %}
             {% endif %}
             {% endwith %}
-
             <form method="post">
                 {{ form.hidden_tag() }}
-                <div class="mb-4">
-                    <label class="form-label text-secondary small fw-bold">USERNAME</label>
-                    {{ form.username(class="form-control", placeholder="Enter your ID") }}
+                <div class="mb-3">
+                    <label class="form-label">Username</label>
+                    {{ form.username(class="form-control") }}
                 </div>
-                <div class="mb-5">
-                    <label class="form-label text-secondary small fw-bold">PASSPHRASE</label>
-                    {{ form.password(class="form-control", placeholder="••••••••") }}
+                <div class="mb-4">
+                    <label class="form-label">Password</label>
+                    {{ form.password(class="form-control") }}
                 </div>
                 <div class="d-grid">
-                    {{ form.submit(class="premium-btn") }}
+                    {{ form.submit(class="btn btn-primary") }}
                 </div>
             </form>
-
-            <div class="mt-5 text-center">
-                <a href="{{ url_for('index') }}" class="text-secondary small text-decoration-none hover-link">← Return
-                    to Public Terminal</a>
+            <div class="text-center mt-3">
+                <a href="{{ url_for('index') }}" class="text-secondary small">Back to Site</a>
             </div>
         </div>
     </div>

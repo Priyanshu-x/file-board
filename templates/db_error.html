@@ -4,62 +4,68 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Service Temporarily Unavailable - SnapDoc</title>
+    <title>Service Unavailable - File Board</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <style>
         body {
-            background: #1a1a1a;
-            color: #fff;
+            background: #f8f9fa;
+            color: #333;
             display: flex;
             align-items: center;
             justify-content: center;
             height: 100vh;
-            font-family: 'Segoe UI', sans-serif;
+            font-family: system-ui, -apple-system, sans-serif;
         }
 
         .error-card {
             text-align: center;
-            background: #2a2a2a;
-            padding: 3rem;
-            border-radius: 20px;
-            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
-            max-width: 500px;
+            background: white;
+            padding: 2rem;
+            border-radius: 8px;
+            border: 1px solid #ddd;
+            max-width: 450px;
         }
 
-        .spinner-grow {
+        .spinner-border {
             width: 3rem;
             height: 3rem;
-            margin-bottom: 1.5rem;
-            color: #0d6efd;
+            margin-bottom: 1rem;
+            color: #000;
         }
 
         h1 {
             font-weight: 700;
-            margin-bottom: 1rem;
+            margin-bottom: 0.5rem;
         }
 
         p {
-            color: #aaa;
-            margin-bottom: 2rem;
+            color: #666;
+            margin-bottom: 1.5rem;
         }
 
         .btn-retry {
-            border-radius: 50px;
-            padding: 0.75rem 2rem;
+            background: #000;
+            color: white;
+            border: none;
+            padding: 0.5rem 1.5rem;
+            border-radius: 4px;
             font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 1px;
+        }
+
+        .btn-retry:hover {
+            background: #333;
+            color: white;
         }
     </style>
 </head>
 
 <body>
     <div class="error-card">
-        <div class="spinner-grow" role="status"></div>
-        <h1>Database Initializing</h1>
-        <p>The system is currently connecting to the database. This usually takes 30-60 seconds after a fresh deployment
-            on Render.</p>
-        <button onclick="window.location.reload()" class="btn btn-primary btn-retry">Retry Connection</button>
+        <div class="spinner-border" role="status"></div>
+        <h1>Initializing</h1>
+        <p>The system is currently connecting to the database. This usually takes about 30 seconds after a deployment.
+        </p>
+        <button onclick="window.location.reload()" class="btn btn-retry">Retry Connection</button>
         <div class="mt-4 small text-muted">Error Code: DNS_RESOLUTION_DELAY</div>
     </div>
 </body>

@@ -14,7 +14,7 @@ services:
     # Removed direct port mapping, using Nginx instead
     environment:
       - SECRET_KEY=dev-secret-key-change-in-prod
-      - DATABASE_URL=postgresql://snapdoc:password@db:5432/snapdoc
+      - DATABASE_URL=postgresql://fileboard:password@db:5432/fileboard
       - ADMIN_USER=admin
       - ADMIN_PASS=admin123
       - MIN_FREE_SPACE_GB=1
@@ -28,9 +28,9 @@ services:
   db:
     image: postgres:15-alpine
     environment:
-      - POSTGRES_USER=snapdoc
+      - POSTGRES_USER=fileboard
       - POSTGRES_PASSWORD=password
-      - POSTGRES_DB=snapdoc
+      - POSTGRES_DB=fileboard
     volumes:
       - postgres_data:/var/lib/postgresql/data
 
