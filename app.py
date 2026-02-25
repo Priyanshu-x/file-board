@@ -42,7 +42,13 @@ login_manager.login_view = 'admin_login'
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 logger.info(f"SECRET_KEY loaded: {'*****' if app.config['SECRET_KEY'] else 'Not Set (using default)'}")
-logger.info(f"DATABASE_URL loaded: {app.config['SQLALCHEMY_DATABASE_URI']}")
+# Sanitize database URL for logging (hide password)
+db_url = app.config['SQLALCHEMY_DATABASE_URI']
+if '@' in db_url:
+    safe_db_url = db_url.split('@')[0].rsplit(':', 1)[0] + ':****@' + db_url.split('@')[1]
+else:
+    safe_db_url = db_url
+logger.info(f"DATABASE_URL loaded: {safe_db_url}")
 
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
@@ -60,7 +66,11 @@ limiter = Limiter(
     key_func=get_remote_address,
     default_limits=["200 per day", "50 per hour"],
     storage_uri=storage_uri,
-    strategy="fixed-window", # Safer strategy for some Redis setups
+    strategy="fixed-window",
+    storage_options={"socket_connect_timeout": 30},
+    on_connected=None,
+    swallow_errors=True,
+    in_memory_fallback_enabled=True,
 )
 
 class User(UserMixin, db.Model):
@@ -230,22 +240,31 @@ def upload_chunk():
     # Check if all chunks are uploaded
     if len(os.listdir(chunk_dir)) == total_chunks:
         final_path = os.path.join(app.config['UPLOAD_FOLDER'], file_id)
-        with open(final_path, 'wb') as target_file:
-            for i in range(total_chunks):
-                chunk_file_path = os.path.join(chunk_dir, str(i))
-                with open(chunk_file_path, 'rb') as f:
-                    target_file.write(f.read())
-                os.remove(chunk_file_path)
         
-        os.rmdir(chunk_dir)
-        
-        upload_time = datetime.now().isoformat()
-        new_file = File(id=file_id, filename=filename, upload_time=upload_time, is_permanent=0)
-        db.session.add(new_file)
-        db.session.commit()
-        
-        socketio.emit('new_file', {'id': file_id, 'filename': filename, 'upload_time': upload_time})
-        return {"status": "finished"}, 200
+        # Double-check to prevent race condition if two requests hit this simultaneously
+        if not os.path.exists(final_path):
+            try:
+                with open(final_path, 'wb') as target_file:
+                    for i in range(total_chunks):
+                        chunk_file_path = os.path.join(chunk_dir, str(i))
+                        with open(chunk_file_path, 'rb') as f:
+                            target_file.write(f.read())
+                        os.remove(chunk_file_path)
+                
+                os.rmdir(chunk_dir)
+                
+                upload_time = datetime.now().isoformat()
+                new_file = File(id=file_id, filename=filename, upload_time=upload_time, is_permanent=0)
+                db.session.add(new_file)
+                db.session.commit()
+                
+                socketio.emit('new_file', {'id': file_id, 'filename': filename, 'upload_time': upload_time})
+                return {"status": "finished"}, 200
+            except Exception as e:
+                logger.error(f"Error joining chunks for {file_id}: {e}")
+                return {"status": "error", "message": "Failed to assemble file"}, 500
+        else:
+            return {"status": "finished"}, 200
 
     return {"status": "chunk_received"}, 200
 
