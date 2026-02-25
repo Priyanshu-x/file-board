@@ -1,57 +1,37 @@
 #!/bin/bash
 
+# Pre-create instance directory for SQLite fallback
+mkdir -p /app/instance/uploads
+
 # Function to wait for a hostname with a timeout
 wait_for_dns() {
     local host=$1
-    local timeout=30
+    local timeout=15 # Shorter timeout since app has its own fallback now
     local elapsed=0
     
-    echo "Attempting to resolve DNS for $host (timeout: ${timeout}s)..."
+    echo "Diagnostic: Checking DNS for $host..."
     
-    # Try the raw host, then try common Render internal suffixes
-    until python3 -c "import socket; \
-          hosts = ['$host', '$host.render.com', '$host.internal']; \
-          success = False; \
-          for h in hosts: \
-              try: \
-                  socket.gethostbyname(h); \
-                  success = True; \
-                  break; \
-              except: pass; \
-          if not success: exit(1)" &>/dev/null; do
+    until python3 -c "import socket; socket.gethostbyname('$host')" &>/dev/null; do
         if [ $elapsed -ge $timeout ]; then
-            echo "WARNING: DNS resolution for $host (and common suffixes) timed out after ${timeout}s."
+            echo "DNS WARNING: $host not resolvable. Flask will use SQLite fallback."
             return 1
         fi
-        echo "DNS $host not ready yet. Retrying in 2s... ($elapsed/${timeout}s)"
         sleep 2
         elapsed=$((elapsed + 2))
     done
     
-    echo "SUCCESS: DNS for $host (or suffix) is resolvable."
+    echo "DNS SUCCESS: $host is ready."
     return 0
 }
-
-# Log environment info (Sanitized)
-echo "Starting application environment diagnostics..."
-python3 -c "import os; from urllib.parse import urlparse; \
-url = os.getenv('DATABASE_URL', ''); \
-if url: \
-    parsed = urlparse(url); \
-    safe_url = f'{parsed.scheme}://{parsed.username}:****@{parsed.hostname}{parsed.path}'; \
-    print(f'DATABASE_URL host: {parsed.hostname}'); \
-else: \
-    print('DATABASE_URL is not set.');"
 
 # Extract hostnames
 DB_HOST=$(python3 -c "from urllib.parse import urlparse; import os; print(urlparse(os.getenv('DATABASE_URL', '')).hostname or 'None')")
 REDIS_HOST=$(python3 -c "from urllib.parse import urlparse; import os; print(urlparse(os.getenv('REDIS_URL', '')).hostname or 'None')")
 
-# Check DNS with timeouts
 if [[ $DB_HOST != "None" && $DB_HOST != "localhost" ]]; then wait_for_dns "$DB_HOST"; fi
 if [[ $REDIS_HOST != "None" && $REDIS_HOST != "localhost" ]]; then wait_for_dns "$REDIS_HOST"; fi
 
-echo "Launching Gunicorn..."
+echo "Launching Gunicorn with process monitoring..."
 gunicorn -w 1 -k geventwebsocket.gunicorn.workers.GeventWebSocketWorker \
          --worker-connections 1000 \
          --bind 127.0.0.1:5000 \

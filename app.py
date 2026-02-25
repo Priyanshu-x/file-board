@@ -12,6 +12,8 @@ import os
 import uuid
 import shutil
 import logging
+import socket
+from urllib.parse import urlparse
 from datetime import datetime, timedelta
 from flask import Flask, request, render_template, send_file, redirect, url_for, flash
 from flask_wtf import FlaskForm
@@ -36,14 +38,48 @@ app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = 'instance/uploads'
 app.config['MAX_CONTENT_LENGTH'] = 1024 * 1024 * 1024
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'super-secret-key')
-app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL', 'sqlite:///files.db')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
-# Robust Engine Options for Production
+# Robust Engine Options
 app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
     "pool_pre_ping": True,
     "pool_recycle": 300,
 }
+
+# Configure logging first
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+def get_safe_url(url):
+    if not url: return "None"
+    try:
+        if '@' in url:
+            return url.split('@')[0].rsplit(':', 1)[0] + ':****@' + url.split('@')[1]
+    except: pass
+    return url
+
+# --- DATABASE FALLBACK LOGIC ---
+db_url = os.getenv('DATABASE_URL')
+db_fallback = False
+
+if db_url:
+    try:
+        hostname = urlparse(db_url).hostname
+        if hostname and hostname != 'localhost':
+            logger.info(f"Testing DNS for database host: {hostname}")
+            socket.gethostbyname(hostname)
+            logger.info("DNS resolution successful.")
+    except Exception as e:
+        logger.warning(f"Database host unreachable via DNS: {e}. Falling back to SQLite.")
+        db_fallback = True
+
+if not db_url or db_fallback:
+    app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///instance/files.db'
+    logger.info("Using local SQLite storage (fallback).")
+else:
+    app.config['SQLALCHEMY_DATABASE_URI'] = db_url
+
+logger.info(f"SQLALCHEMY_DATABASE_URI: {get_safe_url(app.config['SQLALCHEMY_DATABASE_URI'])}")
 
 db = SQLAlchemy(app)
 moment = Moment(app)
@@ -52,33 +88,32 @@ socketio = SocketIO(app, async_mode='gevent', cors_allowed_origins="*")
 login_manager = LoginManager(app)
 login_manager.login_view = 'admin_login'
 
-# Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
-
-# Sanitize sensitive logs
-def get_safe_url(url):
-    if not url: return "None"
-    if '@' in url:
-        return url.split('@')[0].rsplit(':', 1)[0] + ':****@' + url.split('@')[1]
-    return url
-
-logger.info(f"SECRET_KEY loaded: {'*****' if app.config['SECRET_KEY'] else 'Not Set'}")
-logger.info(f"DATABASE_URL loaded: {get_safe_url(app.config['SQLALCHEMY_DATABASE_URI'])}")
-
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+os.makedirs('instance', exist_ok=True)
 
 ADMIN_USER = os.getenv('ADMIN_USER', 'admin')
 ADMIN_PASS = os.getenv('ADMIN_PASS', 'admin123')
 
-storage_uri = os.getenv('REDIS_URL', 'memory://')
+# --- REDIS FALLBACK LOGIC ---
+redis_url = os.getenv('REDIS_URL')
+if redis_url:
+    try:
+        r_host = urlparse(redis_url).hostname
+        if r_host and r_host != 'localhost':
+            socket.gethostbyname(r_host)
+    except:
+        logger.warning("Redis host unreachable. Falling back to memory storage.")
+        redis_url = 'memory://'
+else:
+    redis_url = 'memory://'
+
 limiter = Limiter(
     app=app,
     key_func=get_remote_address,
     default_limits=["200 per day", "50 per hour"],
-    storage_uri=storage_uri,
+    storage_uri=redis_url,
     strategy="fixed-window",
-    storage_options={"socket_connect_timeout": 30},
+    storage_options={"socket_connect_timeout": 5},
     swallow_errors=True,
     in_memory_fallback_enabled=True,
 )
@@ -102,19 +137,24 @@ class File(db.Model):
 
 @login_manager.user_loader
 def load_user(user_id):
-    return User.query.get(int(user_id))
+    try:
+        return User.query.get(int(user_id))
+    except: return None
 
 def delete_expired_files():
     with app.app_context():
-        limit_time = (datetime.now() - timedelta(minutes=15)).isoformat()
-        expired_files = File.query.filter(File.upload_time < limit_time, File.is_permanent == 0).all()
-        for file_obj in expired_files:
-            file_path = os.path.join(app.config['UPLOAD_FOLDER'], file_obj.id)
-            if os.path.exists(file_path):
-                os.remove(file_path)
-            db.session.delete(file_obj)
-            db.session.commit()
-            socketio.emit('file_deleted', {'id': file_obj.id})
+        try:
+            limit_time = (datetime.now() - timedelta(minutes=15)).isoformat()
+            expired_files = File.query.filter(File.upload_time < limit_time, File.is_permanent == 0).all()
+            for file_obj in expired_files:
+                file_path = os.path.join(app.config['UPLOAD_FOLDER'], file_obj.id)
+                if os.path.exists(file_path):
+                    os.remove(file_path)
+                db.session.delete(file_obj)
+                db.session.commit()
+                socketio.emit('file_deleted', {'id': file_obj.id})
+        except Exception as e:
+            logger.error(f"Scheduled deletion failed: {e}")
 
 scheduler = BackgroundScheduler()
 scheduler.add_job(delete_expired_files, 'interval', minutes=1)
@@ -152,13 +192,16 @@ def ratelimit_handler(e):
 
 @app.errorhandler(Exception)
 def handle_exception(e):
-    # Handle SQLAlchemy OperationalError (DNS/Connection issues)
     from sqlalchemy.exc import OperationalError
     if isinstance(e, OperationalError):
         logger.error(f"Database connection error: {e}")
+        # If we hit a connection error at runtime, try to explain it
         return render_template('db_error.html'), 503
     logger.error(f"Unhandled exception: {e}", exc_info=True)
-    return render_template('500.html'), 500
+    try:
+        return render_template('500.html'), 500
+    except:
+        return "Internal Server Error", 500
 
 @app.route('/')
 def index():
@@ -219,42 +262,51 @@ def upload_chunk():
 
 @app.route('/download/<file_id>')
 def download_file(file_id):
-    file_obj = File.query.get(file_id)
-    if not file_obj:
-        flash('File not found')
+    try:
+        file_obj = File.query.get(file_id)
+        if not file_obj:
+            flash('File not found')
+            return redirect(url_for('index'))
+        
+        response = app.make_response("")
+        response.headers['X-Accel-Redirect'] = f'/internal_uploads/{file_id}'
+        response.headers['Content-Disposition'] = f'attachment; filename="{file_obj.filename}"'
+        return response
+    except:
         return redirect(url_for('index'))
-    
-    response = app.make_response("")
-    response.headers['X-Accel-Redirect'] = f'/internal_uploads/{file_id}'
-    response.headers['Content-Disposition'] = f'attachment; filename="{file_obj.filename}"'
-    return response
 
 @app.route('/admin')
 @login_required
 def admin_panel():
-    files = File.query.all()
-    display_files = []
-    for f in files:
-        display_files.append({
-            'id': f.id,
-            'filename': f.filename,
-            'upload_time': datetime.fromisoformat(f.upload_time),
-            'is_permanent': f.is_permanent
-        })
-    _, used, free = shutil.disk_usage(app.config['UPLOAD_FOLDER'])
-    storage_info = {'used': f'{used / (1024**3):.2f} GB', 'free': f'{free / (1024**3):.2f} GB'}
-    return render_template('admin.html', files=display_files, storage_info=storage_info)
+    try:
+        files = File.query.all()
+        display_files = []
+        for f in files:
+            display_files.append({
+                'id': f.id,
+                'filename': f.filename,
+                'upload_time': datetime.fromisoformat(f.upload_time),
+                'is_permanent': f.is_permanent
+            })
+        _, used, free = shutil.disk_usage(app.config['UPLOAD_FOLDER'])
+        storage_info = {'used': f'{used / (1024**3):.2f} GB', 'free': f'{free / (1024**3):.2f} GB'}
+        return render_template('admin.html', files=display_files, storage_info=storage_info)
+    except:
+        return "Admin panel unreachable", 500
 
 @app.route('/admin/login', methods=['GET', 'POST'])
 def admin_login():
     if current_user.is_authenticated: return redirect(url_for('admin_panel'))
     form = AdminLoginForm()
     if form.validate_on_submit():
-        user = User.query.filter_by(username=form.username.data).first()
-        if user and user.check_password(form.password.data):
-            login_user(user)
-            return redirect(url_for('admin_panel'))
-        flash('Invalid login')
+        try:
+            user = User.query.filter_by(username=form.username.data).first()
+            if user and user.check_password(form.password.data):
+                login_user(user)
+                return redirect(url_for('admin_panel'))
+            flash('Invalid login')
+        except:
+            flash('Database error')
     return render_template('admin_login.html', form=form)
 
 @app.route('/admin/logout')
@@ -268,17 +320,19 @@ def admin_logout():
 def admin_manage():
     file_id = request.form.get('file_id')
     action = request.form.get('action')
-    file_obj = File.query.get(file_id)
-    if file_obj:
-        if action == 'delete':
-            file_path = os.path.join(app.config['UPLOAD_FOLDER'], file_id)
-            if os.path.exists(file_path): os.remove(file_path)
-            db.session.delete(file_obj)
-            db.session.commit()
-            socketio.emit('file_deleted', {'id': file_id})
-        elif action == 'make_permanent':
-            file_obj.is_permanent = 1
-            db.session.commit()
+    try:
+        file_obj = File.query.get(file_id)
+        if file_obj:
+            if action == 'delete':
+                file_path = os.path.join(app.config['UPLOAD_FOLDER'], file_id)
+                if os.path.exists(file_path): os.remove(file_path)
+                db.session.delete(file_obj)
+                db.session.commit()
+                socketio.emit('file_deleted', {'id': file_id})
+            elif action == 'make_permanent':
+                file_obj.is_permanent = 1
+                db.session.commit()
+    except: pass
     return redirect(url_for('admin_panel'))
 
 @app.route('/health')
@@ -287,7 +341,7 @@ def health_check():
         db.session.execute(db.select(File)).first()
         return "OK", 200
     except:
-        return "ERROR", 500
+        return "DEGRADED", 200 # App is running but DB is down
 
 if __name__ == '__main__':
     socketio.run(app, debug=True)
