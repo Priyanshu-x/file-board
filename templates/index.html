@@ -100,18 +100,38 @@
             const progressBar = document.getElementById('uploadProgress');
             const statusLabel = document.getElementById('uploadStatus');
             const dropZone = document.getElementById('dropZone');
+            const csrfToken = document.querySelector('input[name="csrf_token"]').value;
 
-            // Show progress, hide dropzone
             progressContainer.style.display = 'block';
             dropZone.style.display = 'none';
 
-            const csrfToken = document.querySelector('input[name="csrf_token"]').value;
-
             for (let i = 0; i < files.length; i++) {
                 const file = files[i];
-                const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
-                const fileId = crypto.randomUUID();
 
+                // --- Step 1: Request Secure ID from Server ---
+                statusLabel.innerText = `Requesting ID for ${file.name}...`;
+                let fileId;
+                try {
+                    const reqResponse = await fetch('/request_upload', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'X-CSRFToken': csrfToken
+                        },
+                        body: JSON.stringify({ filename: file.name })
+                    });
+                    const reqData = await reqResponse.json();
+                    if (!reqResponse.ok) throw new Error(reqData.error || 'Request failed');
+                    fileId = reqData.file_id;
+                } catch (error) {
+                    alert('Upload failed: ' + error.message);
+                    progressContainer.style.display = 'none';
+                    dropZone.style.display = 'block';
+                    return;
+                }
+
+                // --- Step 2: Transmit Chunks ---
+                const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
                 for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
                     statusLabel.innerText = `Uploading ${file.name} (${chunkIndex + 1}/${totalChunks})...`;
 
@@ -124,7 +144,6 @@
                     formData.append('file_id', fileId);
                     formData.append('chunk_index', chunkIndex);
                     formData.append('total_chunks', totalChunks);
-                    formData.append('filename', file.name);
 
                     try {
                         const response = await fetch('/upload_chunk', {
@@ -132,7 +151,10 @@
                             body: formData,
                             headers: { 'X-CSRFToken': csrfToken }
                         });
-                        if (!response.ok) throw new Error('Upload failed with status ' + response.status);
+                        if (!response.ok) {
+                            const errorData = await response.json();
+                            throw new Error(errorData.error || 'Upload failed');
+                        }
 
                         const percent = Math.round(((i + (chunkIndex + 1) / totalChunks) / files.length) * 100);
                         progressBar.style.width = percent + '%';

@@ -140,8 +140,15 @@ class User(UserMixin, db.Model):
 class File(db.Model):
     id = db.Column(db.String, primary_key=True)
     filename = db.Column(db.String, nullable=False)
-    upload_time = db.Column(db.String, nullable=False)
+    upload_time = db.Column(db.DateTime, nullable=False, default=datetime.now, index=True)
     is_permanent = db.Column(db.Integer, default=0)
+    size_bytes = db.Column(db.BigInteger, nullable=True)
+
+class Chunk(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    file_id = db.Column(db.String, db.ForeignKey('file.id'), nullable=False)
+    chunk_index = db.Column(db.Integer, nullable=False)
+    __table_args__ = (db.UniqueConstraint('file_id', 'chunk_index', name='_file_chunk_uc'),)
 
 @login_manager.user_loader
 def load_user(user_id):
@@ -152,17 +159,35 @@ def load_user(user_id):
 def delete_expired_files():
     with app.app_context():
         try:
-            limit_time = (datetime.now() - timedelta(minutes=15)).isoformat()
-            expired_files = File.query.filter(File.upload_time < limit_time, File.is_permanent == 0).all()
-            for file_obj in expired_files:
-                file_path = os.path.join(app.config['UPLOAD_FOLDER'], file_obj.id)
-                if os.path.exists(file_path):
-                    os.remove(file_path)
-                db.session.delete(file_obj)
-                db.session.commit()
-                socketio.emit('file_deleted', {'id': file_obj.id})
-        except Exception as e:
-            logger.error(f"Scheduled deletion failed: {e}")
+            # Simple lock to prevent multi-process thrashing if using local FS
+            lock_file = os.path.join(INSTANCE_DIR, ".cleanup.lock")
+            if os.path.exists(lock_file):
+                # Check if lock is stale (older than 5 mins)
+                if datetime.now().timestamp() - os.path.getmtime(lock_file) < 300:
+                    return
+            
+            with open(lock_file, 'w') as f: f.write(str(os.getpid()))
+            
+            try:
+                limit_time = datetime.now() - timedelta(minutes=15)
+                expired_files = File.query.filter(File.upload_time < limit_time, File.is_permanent == 0).all()
+                
+                if expired_files:
+                    logger.info(f"Cleanup: Found {len(expired_files)} expired entries.")
+                    for file_obj in expired_files:
+                        file_path = os.path.join(app.config['UPLOAD_FOLDER'], file_obj.id)
+                        if os.path.exists(file_path):
+                            os.remove(file_path)
+                        db.session.delete(file_obj)
+                        socketio.emit('file_deleted', {'id': file_obj.id})
+                    
+                    db.session.commit()
+                    logger.info("Cleanup: Atomic transaction complete.")
+            finally:
+                if os.path.exists(lock_file): os.remove(lock_file)
+                
+        except Exception:
+            logger.exception("Scheduled deletion failed unexpectedly")
 
 scheduler = BackgroundScheduler()
 scheduler.add_job(delete_expired_files, 'interval', minutes=1)
@@ -212,21 +237,32 @@ def handle_exception(e):
 
 @app.route('/')
 def index():
-    limit_time = (datetime.now() - timedelta(minutes=10)).isoformat()
+    limit_time = datetime.now() - timedelta(minutes=10)
     try:
         files = File.query.filter((File.is_permanent == 1) | (File.upload_time > limit_time)).all()
-    except Exception as e:
-        logger.error(f"Index route DB failure: {e}")
+    except Exception:
+        logger.exception("Index route DB failure")
         return render_template('db_error.html'), 503
         
-    display_files = []
-    for f in files:
-        display_files.append({
-            'id': f.id,
-            'filename': f.filename,
-            'upload_time': datetime.fromisoformat(f.upload_time)
-        })
-    return render_template('index.html', files=display_files, form=UploadForm())
+    return render_template('index.html', files=files, form=UploadForm())
+
+@app.route('/request_upload', methods=['POST'])
+@limiter.limit("10 per minute")
+def request_upload():
+    filename = secure_filename(request.json.get('filename'))
+    if not filename: return {"error": "Missing filename"}, 400
+    
+    # Disk Quota Check
+    _, _, free = shutil.disk_usage(app.config['UPLOAD_FOLDER'])
+    if free < 2 * (1024**3): # 2GB buffer
+        return {"error": "Server storage full. Please try again later."}, 507
+
+    file_id = str(uuid.uuid4())
+    new_file = File(id=file_id, filename=filename, upload_time=datetime.now())
+    db.session.add(new_file)
+    db.session.commit()
+    
+    return {"file_id": file_id}, 200
 
 @app.route('/upload_chunk', methods=['POST'])
 @limiter.limit("200 per minute")
@@ -234,8 +270,11 @@ def upload_chunk():
     file_id = request.form.get('file_id')
     chunk_index = int(request.form.get('chunk_index'))
     total_chunks = int(request.form.get('total_chunks'))
-    filename = secure_filename(request.form.get('filename'))
     file_chunk = request.files['file']
+
+    # Validate ID exists and is owned/recent
+    f_entry = File.query.get(file_id)
+    if not f_entry: return {"error": "Invalid upload session"}, 403
 
     chunk_dir = os.path.join(app.config['UPLOAD_FOLDER'], "_chunks", file_id)
     os.makedirs(chunk_dir, exist_ok=True)
@@ -243,7 +282,16 @@ def upload_chunk():
     chunk_path = os.path.join(chunk_dir, str(chunk_index))
     file_chunk.save(chunk_path)
 
-    if len(os.listdir(chunk_dir)) == total_chunks:
+    # Track chunk in DB
+    try:
+        if not Chunk.query.filter_by(file_id=file_id, chunk_index=chunk_index).first():
+            db.session.add(Chunk(file_id=file_id, chunk_index=chunk_index))
+            db.session.commit()
+    except Exception:
+        db.session.rollback()
+
+    # Verify if all chunks are in DB
+    if Chunk.query.filter_by(file_id=file_id).count() == total_chunks:
         final_path = os.path.join(app.config['UPLOAD_FOLDER'], file_id)
         if not os.path.exists(final_path):
             temp_final = final_path + ".tmp"
@@ -253,33 +301,40 @@ def upload_chunk():
                         c_path = os.path.join(chunk_dir, str(i))
                         with open(c_path, 'rb') as f:
                             target_file.write(f.read())
-                os.replace(temp_final, final_path) # Atomic Rename
+                
+                os.replace(temp_final, final_path)
+                f_entry.size_bytes = os.path.getsize(final_path)
+                f_entry.upload_time = datetime.now() # Reset to final assembly time
+                
+                # Cleanup chunks from DB and FS
+                Chunk.query.filter_by(file_id=file_id).delete()
+                db.session.commit()
                 shutil.rmtree(chunk_dir)
                 
-                new_file = File(id=file_id, filename=filename, upload_time=datetime.now().isoformat(), is_permanent=0)
-                db.session.add(new_file)
-                db.session.commit()
-                socketio.emit('new_file', {'id': file_id, 'filename': filename, 'upload_time': new_file.upload_time})
+                socketio.emit('new_file', {'id': file_id, 'filename': f_entry.filename, 'upload_time': f_entry.upload_time.isoformat()})
                 return {"status": "finished"}, 200
-            except Exception as e:
+            except Exception:
+                logger.exception(f"Assembly failed for {file_id}")
                 if os.path.exists(temp_final): os.remove(temp_final)
-                return {"status": "error", "message": str(e)}, 500
+                return {"status": "error", "message": "Assembly failed"}, 500
         return {"status": "finished"}, 200
     return {"status": "chunk_received"}, 200
 
 @app.route('/download/<file_id>')
 def download_file(file_id):
     try:
-        file_obj = File.query.get(file_id)
+        # Use simple get for string PK
+        file_obj = File.query.filter_by(id=file_id).first()
         if not file_obj:
-            flash('File not found')
+            flash('File no longer available')
             return redirect(url_for('index'))
         
         response = app.make_response("")
         response.headers['X-Accel-Redirect'] = f'/internal_uploads/{file_id}'
         response.headers['Content-Disposition'] = f'attachment; filename="{file_obj.filename}"'
         return response
-    except:
+    except Exception:
+        logger.exception(f"Download error for {file_id}")
         return redirect(url_for('index'))
 
 @app.route('/admin')
@@ -328,7 +383,7 @@ def admin_manage():
     file_id = request.form.get('file_id')
     action = request.form.get('action')
     try:
-        file_obj = File.query.get(file_id)
+        file_obj = File.query.filter_by(id=file_id).first()
         if file_obj:
             if action == 'delete':
                 file_path = os.path.join(app.config['UPLOAD_FOLDER'], file_id)
@@ -339,7 +394,9 @@ def admin_manage():
             elif action == 'make_permanent':
                 file_obj.is_permanent = 1
                 db.session.commit()
-    except: pass
+    except Exception:
+        logger.exception(f"Admin management failure for {file_id}")
+        flash("Management action failed")
     return redirect(url_for('admin_panel'))
 
 @app.route('/health')
