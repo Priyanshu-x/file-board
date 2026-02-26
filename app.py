@@ -170,19 +170,23 @@ def delete_expired_files():
             
             try:
                 limit_time = datetime.now() - timedelta(minutes=15)
-                expired_files = File.query.filter(File.upload_time < limit_time, File.is_permanent == 0).all()
-                
-                if expired_files:
-                    logger.info(f"Cleanup: Found {len(expired_files)} expired entries.")
-                    for file_obj in expired_files:
+                # Fetching all non-permanent to be type-safe during schema transition
+                all_files = File.query.filter_by(is_permanent=0).all()
+                for file_obj in all_files:
+                    ut = file_obj.upload_time
+                    if isinstance(ut, str):
+                        try: ut = datetime.fromisoformat(ut)
+                        except: ut = datetime.now()
+                    
+                    if ut < limit_time:
                         file_path = os.path.join(app.config['UPLOAD_FOLDER'], file_obj.id)
                         if os.path.exists(file_path):
                             os.remove(file_path)
                         db.session.delete(file_obj)
                         socketio.emit('file_deleted', {'id': file_obj.id})
-                    
-                    db.session.commit()
-                    logger.info("Cleanup: Atomic transaction complete.")
+                
+                db.session.commit()
+                logger.info("Cleanup: Atomic transaction complete.")
             finally:
                 if os.path.exists(lock_file): os.remove(lock_file)
                 
@@ -192,9 +196,31 @@ def delete_expired_files():
 scheduler = BackgroundScheduler()
 scheduler.add_job(delete_expired_files, 'interval', minutes=1)
 
+def run_migrations():
+    with app.app_context():
+        try:
+            # Check for missing columns in 'file' table
+            from sqlalchemy import text
+            with db.engine.connect() as conn:
+                # Add size_bytes if missing
+                try:
+                    conn.execute(text("ALTER TABLE file ADD COLUMN size_bytes BIGINT"))
+                    conn.commit()
+                    logger.info("Migration: Added size_bytes to file table.")
+                except: pass
+                
+                # Add upload_time index if missing
+                try:
+                    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_file_upload_time ON file (upload_time)"))
+                    conn.commit()
+                except: pass
+        except Exception as e:
+            logger.warning(f"Auto-migration skipped or failed: {e}")
+
 with app.app_context():
     try:
         db.create_all()
+        run_migrations()
         if not User.query.filter_by(username=ADMIN_USER).first():
             admin = User(username=ADMIN_USER)
             admin.set_password(ADMIN_PASS)
@@ -228,8 +254,12 @@ def handle_exception(e):
     from sqlalchemy.exc import OperationalError
     if isinstance(e, OperationalError):
         logger.error(f"Database connection error: {e}")
+        if request.path.startswith('/request_upload') or request.path.startswith('/upload_chunk'):
+            return {"error": "Database error"}, 503
         return render_template('db_error.html'), 503
     logger.error(f"Unhandled exception: {e}", exc_info=True)
+    if request.path.startswith('/request_upload') or request.path.startswith('/upload_chunk') or request.is_json:
+        return {"error": str(e)}, 500
     try:
         return render_template('500.html'), 500
     except:
@@ -237,11 +267,23 @@ def handle_exception(e):
 
 @app.route('/')
 def index():
-    limit_time = datetime.now() - timedelta(minutes=10)
     try:
-        files = File.query.filter((File.is_permanent == 1) | (File.upload_time > limit_time)).all()
+        limit_time = datetime.now() - timedelta(minutes=10)
+        # Type-agnostic filtering
+        all_files = File.query.all()
+        files = []
+        for f in all_files:
+            ut = f.upload_time
+            if isinstance(ut, str):
+                try: ut = datetime.fromisoformat(ut)
+                except: ut = datetime.now()
+            
+            if f.is_permanent == 1 or ut > limit_time:
+                f.upload_time = ut # Patch in-memory for template
+                files.append(f)
+                
     except Exception:
-        logger.exception("Index route DB failure")
+        logger.exception("Index route failure")
         return render_template('db_error.html'), 503
         
     return render_template('index.html', files=files, form=UploadForm())
@@ -249,7 +291,12 @@ def index():
 @app.route('/request_upload', methods=['POST'])
 @limiter.limit("10 per minute")
 def request_upload():
-    filename = secure_filename(request.json.get('filename'))
+    if not request.is_json:
+        return {"error": "Request must be JSON"}, 400
+    data = request.get_json()
+    if not data:
+        return {"error": "Invalid or missing JSON body"}, 400
+    filename = secure_filename(data.get('filename'))
     if not filename: return {"error": "Missing filename"}, 400
     
     # Disk Quota Check
@@ -344,10 +391,16 @@ def admin_panel():
         files = File.query.all()
         display_files = []
         for f in files:
+            # Handle case where upload_time might be a string in existing DB
+            ut = f.upload_time
+            if isinstance(ut, str):
+                try: ut = datetime.fromisoformat(ut)
+                except: ut = datetime.now()
+            
             display_files.append({
                 'id': f.id,
                 'filename': f.filename,
-                'upload_time': datetime.fromisoformat(f.upload_time),
+                'upload_time': ut,
                 'is_permanent': f.is_permanent
             })
         _, used, free = shutil.disk_usage(app.config['UPLOAD_FOLDER'])
