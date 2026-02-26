@@ -311,6 +311,48 @@ def request_upload():
     
     return {"file_id": file_id}, 200
 
+def assemble_file_async(file_id, filename, total_chunks, chunk_dir):
+    with app.app_context():
+        import time
+        start_time = time.time()
+        logger.info(f"Assembly [Async]: Starting for {filename} ({file_id})")
+        
+        final_path = os.path.join(app.config['UPLOAD_FOLDER'], file_id)
+        try:
+            with open(final_path, 'wb') as target:
+                for i in range(total_chunks):
+                    chunk_path = os.path.join(chunk_dir, str(i))
+                    if not os.path.exists(chunk_path):
+                        raise Exception(f"Missing chunk {i}")
+                    
+                    with open(chunk_path, 'rb') as source:
+                        shutil.copyfileobj(source, target)
+            
+            assembly_time = time.time() - start_time
+            file_obj = File.query.filter_by(id=file_id).first()
+            if file_obj:
+                file_obj.size_bytes = os.path.getsize(final_path)
+                # Cleanup chunks from DB
+                Chunk.query.filter_by(file_id=file_id).delete()
+                db.session.commit()
+                logger.info(f"Assembly [Async]: Complete in {assembly_time:.2f}s for {filename}")
+            
+            # Cleanup chunks from FS
+            if os.path.exists(chunk_dir):
+                shutil.rmtree(chunk_dir)
+            
+            # Notify frontend
+            socketio.emit('new_file', {
+                'id': file_id,
+                'filename': filename
+            })
+            socketio.emit('assembly_complete', {'file_id': file_id})
+            
+        except Exception as e:
+            logger.error(f"Assembly [Async]: Failed for {file_id}: {e}")
+            if os.path.exists(final_path): os.remove(final_path)
+            socketio.emit('assembly_error', {'file_id': file_id, 'error': str(e)})
+
 @app.route('/upload_chunk', methods=['POST'])
 @limiter.limit("200 per minute")
 def upload_chunk():
@@ -339,46 +381,11 @@ def upload_chunk():
 
     # Verify if all chunks are in DB
     if Chunk.query.filter_by(file_id=file_id).count() == total_chunks:
-        final_path = os.path.join(app.config['UPLOAD_FOLDER'], file_id)
-        if not os.path.exists(final_path):
-            # Assembly: Efficient IO-based merging
-            import shutil
-            import time
-            start_time = time.time()
-            logger.info(f"Assembly: Starting for {f_entry.filename} ({f_entry.id})")
-            
-            final_path = os.path.join(app.config['UPLOAD_FOLDER'], f_entry.id)
-            try:
-                with open(final_path, 'wb') as target:
-                    for i in range(total_chunks):
-                        chunk_path = os.path.join(chunk_dir, str(i))
-                        if not os.path.exists(chunk_path):
-                            raise Exception(f"Missing chunk {i}")
-                        
-                        with open(chunk_path, 'rb') as source:
-                            shutil.copyfileobj(source, target)
-                
-                assembly_time = time.time() - start_time
-                f_entry.size_bytes = os.path.getsize(final_path)
-                # Cleanup chunks from DB
-                Chunk.query.filter_by(file_id=file_id).delete()
-                db.session.commit()
-                
-                logger.info(f"Assembly: Complete in {assembly_time:.2f}s for {f_entry.filename}")
-                
-                # Cleanup chunks from FS
-                shutil.rmtree(chunk_dir)
-                
-                socketio.emit('new_file', {
-                    'id': f_entry.id,
-                    'filename': f_entry.filename
-                })
-                return {"message": "Upload complete"}, 200
-            except Exception as e:
-                logger.error(f"Assembly: Failed for {f_entry.id}: {e}")
-                if os.path.exists(final_path): os.remove(final_path)
-                return {"error": "File assembly failed"}, 500
-        return {"status": "finished"}, 200
+        # Trigger Async Assembly
+        import gevent
+        gevent.spawn(assemble_file_async, file_id, f_entry.filename, total_chunks, chunk_dir)
+        return {"status": "assembling", "message": "All chunks received, assembling in background..."}, 200
+        
     return {"status": "chunk_received"}, 200
 
 @app.route('/download/<file_id>')

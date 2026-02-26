@@ -168,15 +168,32 @@
                     }
                 }
             }
-            statusLabel.innerText = "Finalizing upload...";
-            window.location.reload();
+            statusLabel.innerText = "All chunks sent. Assembling file... Please wait.";
         });
 
         const socket = io();
+
+        socket.on('assembly_complete', function (data) {
+            const statusLabel = document.getElementById('uploadStatus');
+            if (statusLabel) statusLabel.innerText = "Assembly complete! Reloading...";
+            setTimeout(() => window.location.reload(), 1000);
+        });
+
+        socket.on('assembly_error', function (data) {
+            alert('Error during background assembly: ' + data.error);
+            const progressContainer = document.getElementById('progressContainer');
+            const dropZone = document.getElementById('dropZone');
+            progressContainer.style.display = 'none';
+            dropZone.style.display = 'block';
+        });
+
         socket.on('new_file', function (file) {
             const list = document.getElementById('fileList');
             const noMsg = document.getElementById('noFilesMsg');
             if (noMsg) noMsg.remove();
+
+            // Avoid duplicate entries if reload is about to happen
+            if (document.querySelector(`.file-item[data-file-id="${file.id}"]`)) return;
 
             const item = document.createElement('div');
             item.className = 'file-item';
