@@ -341,29 +341,43 @@ def upload_chunk():
     if Chunk.query.filter_by(file_id=file_id).count() == total_chunks:
         final_path = os.path.join(app.config['UPLOAD_FOLDER'], file_id)
         if not os.path.exists(final_path):
-            temp_final = final_path + ".tmp"
+            # Assembly: Efficient IO-based merging
+            import shutil
+            import time
+            start_time = time.time()
+            logger.info(f"Assembly: Starting for {f_entry.filename} ({f_entry.id})")
+            
+            final_path = os.path.join(app.config['UPLOAD_FOLDER'], f_entry.id)
             try:
-                with open(temp_final, 'wb') as target_file:
+                with open(final_path, 'wb') as target:
                     for i in range(total_chunks):
-                        c_path = os.path.join(chunk_dir, str(i))
-                        with open(c_path, 'rb') as f:
-                            target_file.write(f.read())
+                        chunk_path = os.path.join(chunk_dir, str(i))
+                        if not os.path.exists(chunk_path):
+                            raise Exception(f"Missing chunk {i}")
+                        
+                        with open(chunk_path, 'rb') as source:
+                            shutil.copyfileobj(source, target)
                 
-                os.replace(temp_final, final_path)
+                assembly_time = time.time() - start_time
                 f_entry.size_bytes = os.path.getsize(final_path)
-                f_entry.upload_time = datetime.now() # Reset to final assembly time
-                
-                # Cleanup chunks from DB and FS
+                # Cleanup chunks from DB
                 Chunk.query.filter_by(file_id=file_id).delete()
                 db.session.commit()
+                
+                logger.info(f"Assembly: Complete in {assembly_time:.2f}s for {f_entry.filename}")
+                
+                # Cleanup chunks from FS
                 shutil.rmtree(chunk_dir)
                 
-                socketio.emit('new_file', {'id': file_id, 'filename': f_entry.filename, 'upload_time': f_entry.upload_time.isoformat()})
-                return {"status": "finished"}, 200
-            except Exception:
-                logger.exception(f"Assembly failed for {file_id}")
-                if os.path.exists(temp_final): os.remove(temp_final)
-                return {"status": "error", "message": "Assembly failed"}, 500
+                socketio.emit('new_file', {
+                    'id': f_entry.id,
+                    'filename': f_entry.filename
+                })
+                return {"message": "Upload complete"}, 200
+            except Exception as e:
+                logger.error(f"Assembly: Failed for {f_entry.id}: {e}")
+                if os.path.exists(final_path): os.remove(final_path)
+                return {"error": "File assembly failed"}, 500
         return {"status": "finished"}, 200
     return {"status": "chunk_received"}, 200
 

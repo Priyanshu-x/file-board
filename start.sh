@@ -34,6 +34,7 @@ if [[ $REDIS_HOST != "None" && $REDIS_HOST != "localhost" ]]; then wait_for_dns 
 echo "Launching Gunicorn with process monitoring..."
 gunicorn -w 1 -k geventwebsocket.gunicorn.workers.GeventWebSocketWorker \
          --worker-connections 1000 \
+         --timeout 600 \
          --bind 127.0.0.1:5000 \
          app:app &
 GUNICORN_PID=$!
