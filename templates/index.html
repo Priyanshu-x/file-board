@@ -78,6 +78,21 @@
 
         dropZone.addEventListener('click', () => fileInput.click());
 
+        function updateDropZoneText() {
+            const p = dropZone.querySelector('p');
+            if (fileInput.files.length > 0) {
+                if (fileInput.files.length === 1) {
+                    p.innerText = `Selected: ${fileInput.files[0].name}`;
+                } else {
+                    p.innerText = `Selected ${fileInput.files.length} files`;
+                }
+            } else {
+                p.innerText = "Drag & drop files here or click to select";
+            }
+        }
+
+        fileInput.addEventListener('change', updateDropZoneText);
+
         ['dragover', 'dragleave', 'drop'].forEach(evt => {
             dropZone.addEventListener(evt, (e) => {
                 e.preventDefault();
@@ -88,6 +103,7 @@
 
         dropZone.addEventListener('drop', (e) => {
             fileInput.files = e.dataTransfer.files;
+            updateDropZoneText();
         });
 
         document.getElementById('uploadForm').addEventListener('submit', async function (e) {
