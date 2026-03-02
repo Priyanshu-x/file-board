@@ -182,6 +182,13 @@ def delete_expired_files():
                         file_path = os.path.join(app.config['UPLOAD_FOLDER'], file_obj.id)
                         if os.path.exists(file_path):
                             os.remove(file_path)
+                            
+                        # Cleanup abandoned chunks if they exist
+                        chunk_path = os.path.join(app.config['UPLOAD_FOLDER'], "_chunks", file_obj.id)
+                        if os.path.exists(chunk_path):
+                            shutil.rmtree(chunk_path)
+                        Chunk.query.filter_by(file_id=file_obj.id).delete()
+                            
                         db.session.delete(file_obj)
                         socketio.emit('file_deleted', {'id': file_obj.id})
                 
@@ -268,7 +275,7 @@ def handle_exception(e):
 @app.route('/')
 def index():
     try:
-        limit_time = datetime.now() - timedelta(minutes=10)
+        limit_time = datetime.now() - timedelta(minutes=15)
         # Type-agnostic filtering
         all_files = File.query.all()
         files = []
@@ -301,7 +308,7 @@ def request_upload():
     
     # Disk Quota Check
     _, _, free = shutil.disk_usage(app.config['UPLOAD_FOLDER'])
-    if free < 2 * (1024**3): # 2GB buffer
+    if free < 0.5 * (1024**3): # 500MB buffer
         return {"error": "Server storage full. Please try again later."}, 507
 
     file_id = str(uuid.uuid4())
