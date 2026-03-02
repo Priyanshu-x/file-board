@@ -118,8 +118,11 @@
             const dropZone = document.getElementById('dropZone');
             const csrfToken = document.querySelector('input[name="csrf_token"]').value;
 
+            const submitBtn = document.querySelector('button[type="submit"]');
+
             progressContainer.style.display = 'block';
             dropZone.style.display = 'none';
+            submitBtn.disabled = true; // Prevent double clicks
 
             for (let i = 0; i < files.length; i++) {
                 const file = files[i];
@@ -140,9 +143,15 @@
                     if (!reqResponse.ok) throw new Error(reqData.error || 'Request failed');
                     fileId = reqData.file_id;
                 } catch (error) {
+                    // Suppress alert if the error is due to user reloading the page (fetch abort)
+                    if (error.name === 'TypeError' && error.message === 'Failed to fetch') {
+                        console.warn("Upload request aborted (likely due to page reload).");
+                        return;
+                    }
                     alert('Upload failed: ' + error.message);
                     progressContainer.style.display = 'none';
                     dropZone.style.display = 'block';
+                    submitBtn.disabled = false;
                     return;
                 }
 
@@ -177,9 +186,14 @@
                         progressBar.innerText = percent + '%';
                     } catch (error) {
                         console.error(error);
+                        if (error.name === 'TypeError' && error.message === 'Failed to fetch') {
+                            console.warn("Chunk upload aborted (likely due to page reload).");
+                            return;
+                        }
                         alert('Upload failed: ' + error.message);
                         progressContainer.style.display = 'none';
                         dropZone.style.display = 'block';
+                        submitBtn.disabled = false;
                         return;
                     }
                 }

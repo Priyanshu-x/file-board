@@ -106,11 +106,13 @@ ADMIN_PASS = os.getenv('ADMIN_PASS', 'admin123')
 redis_url = os.getenv('REDIS_URL')
 if redis_url:
     try:
-        r_host = urlparse(redis_url).hostname
-        if r_host and r_host != 'localhost':
-            socket.gethostbyname(r_host)
-    except:
-        logger.warning("Redis host unreachable. Falling back to memory storage.")
+        import redis
+        # Use a short timeout so we don't block boot for long if Redis is dead
+        r = redis.Redis.from_url(redis_url, socket_connect_timeout=2)
+        r.ping()
+        logger.info("Redis connection and ping successful.")
+    except Exception as e:
+        logger.warning(f"Redis host unreachable or ping failed: {e}. Falling back to memory storage.")
         redis_url = 'memory://'
 else:
     redis_url = 'memory://'
