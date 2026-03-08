@@ -22,7 +22,6 @@ from wtforms.validators import DataRequired, Length
 from werkzeug.utils import secure_filename
 from werkzeug.exceptions import RequestEntityTooLarge
 from werkzeug.security import generate_password_hash, check_password_hash
-from apscheduler.schedulers.background import BackgroundScheduler
 from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
@@ -68,26 +67,16 @@ def get_safe_url(url):
     except: pass
     return url
 
-# --- DATABASE FALLBACK LOGIC ---
+# --- STRICT DATABASE CONFIGURATION ---
 db_url = os.getenv('DATABASE_URL')
-db_fallback = False
 
-if db_url:
-    try:
-        hostname = urlparse(db_url).hostname
-        if hostname and hostname != 'localhost':
-            logger.info(f"Testing DNS for database host: {hostname}")
-            socket.gethostbyname(hostname)
-            logger.info("DNS resolution successful.")
-    except Exception as e:
-        logger.warning(f"Database host unreachable via DNS: {e}. Falling back to SQLite.")
-        db_fallback = True
-
-if not db_url or db_fallback:
+if not db_url:
     # Use 4 slashes for absolute path on Linux/Docker
     app.config['SQLALCHEMY_DATABASE_URI'] = f"sqlite:///{os.path.join(INSTANCE_DIR, 'files.db')}"
-    logger.info("Using local SQLite storage (fallback).")
+    logger.info("No DATABASE_URL found. Using local SQLite storage (fallback).")
 else:
+    # In Gevent heavily concurrent environments, DNS resolution should be delegated to the raw socket at connect time
+    # rather than globally blocking the worker initialization pool.
     app.config['SQLALCHEMY_DATABASE_URI'] = db_url
 
 logger.info(f"SQLALCHEMY_DATABASE_URI: {get_safe_url(app.config['SQLALCHEMY_DATABASE_URI'])}")
@@ -203,8 +192,14 @@ def delete_expired_files():
             # MUST manually teardown session in background threads to avoid connection leaks
             db.session.remove()
 
-scheduler = BackgroundScheduler()
-scheduler.add_job(delete_expired_files, 'interval', minutes=1)
+def background_cleanup_loop():
+    import gevent
+    while True:
+        gevent.sleep(60)
+        delete_expired_files()
+
+import gevent
+gevent.spawn(background_cleanup_loop)
 
 def run_migrations():
     with app.app_context():
@@ -245,8 +240,6 @@ with app.app_context():
                 admin_user.set_password(ADMIN_PASS)
                 db.session.commit()
                 logger.info("Updated admin password from environment variables.")
-        if not scheduler.running:
-            scheduler.start()
     except Exception as e:
         logger.error(f"Post-boot initialization failed: {e}")
 
@@ -312,25 +305,37 @@ def index():
 @app.route('/request_upload', methods=['POST'])
 @limiter.limit("10 per minute")
 def request_upload():
-    if not request.is_json:
-        return {"error": "Request must be JSON"}, 400
-    data = request.get_json()
-    if not data:
-        return {"error": "Invalid or missing JSON body"}, 400
-    filename = secure_filename(data.get('filename'))
-    if not filename: return {"error": "Missing filename"}, 400
-    
-    # Disk Quota Check
-    _, _, free = shutil.disk_usage(app.config['UPLOAD_FOLDER'])
-    if free < 0.5 * (1024**3): # 500MB buffer
-        return {"error": "Server storage full. Please try again later."}, 507
+    logger.info("TRACE: /request_upload hitting endpoint.")
+    try:
+        if not request.is_json:
+            return {"error": "Request must be JSON"}, 400
+        data = request.get_json()
+        if not data:
+            return {"error": "Invalid or missing JSON body"}, 400
+        filename = secure_filename(data.get('filename'))
+        if not filename: return {"error": "Missing filename"}, 400
+        
+        # Disk Quota Check
+        logger.info(f"TRACE: Checking disk space for {filename}")
+        _, _, free = shutil.disk_usage(app.config['UPLOAD_FOLDER'])
+        if free < 0.5 * (1024**3): # 500MB buffer
+            return {"error": "Server storage full. Please try again later."}, 507
 
-    file_id = str(uuid.uuid4())
-    new_file = File(id=file_id, filename=filename, upload_time=datetime.now())
-    db.session.add(new_file)
-    db.session.commit()
-    
-    return {"file_id": file_id}, 200
+        logger.info(f"TRACE: Generating DB record for {filename}")
+        file_id = str(uuid.uuid4())
+        new_file = File(id=file_id, filename=filename, upload_time=datetime.now())
+        db.session.add(new_file)
+        db.session.commit()
+        
+        logger.info(f"TRACE: Transaction committed for {file_id}. Returning ID.")
+        return {"file_id": file_id}, 200
+    except Exception as e:
+        logger.error(f"FATAL TRACE: /request_upload hung or errored: {e}", exc_info=True)
+        db.session.rollback()
+        return {"error": "Internal server error during DB transaction."}, 500
+    finally:
+        # Guarantee session teardown for request
+        db.session.remove()
 
 def assemble_file_async(file_id, filename, total_chunks, chunk_dir):
     with app.app_context():
