@@ -229,11 +229,20 @@ with app.app_context():
     try:
         db.create_all()
         run_migrations()
-        if not User.query.filter_by(username=ADMIN_USER).first():
-            admin = User(username=ADMIN_USER)
-            admin.set_password(ADMIN_PASS)
-            db.session.add(admin)
+        # Ensure admin user exists and password matches current env var
+        admin_user = User.query.filter_by(username=ADMIN_USER).first()
+        if not admin_user:
+            admin_user = User(username=ADMIN_USER)
+            admin_user.set_password(ADMIN_PASS)
+            db.session.add(admin_user)
             db.session.commit()
+            logger.info("Created default admin user.")
+        else:
+            # Update password if it was changed in environment variables
+            if not admin_user.check_password(ADMIN_PASS):
+                admin_user.set_password(ADMIN_PASS)
+                db.session.commit()
+                logger.info("Updated admin password from environment variables.")
         if not scheduler.running:
             scheduler.start()
     except Exception as e:
@@ -448,9 +457,13 @@ def admin_login():
             if user and user.check_password(form.password.data):
                 login_user(user)
                 return redirect(url_for('admin_panel'))
-            flash('Invalid login')
+            flash('Invalid username or password')
         except:
             flash('Database error')
+    elif form.errors:
+        for err_msgs in form.errors.values():
+            for err in err_msgs:
+                flash(err)
     return render_template('admin_login.html', form=form)
 
 @app.route('/admin/logout')
