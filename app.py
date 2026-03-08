@@ -117,15 +117,14 @@ if redis_url:
 else:
     redis_url = 'memory://'
 
+# Use pure in-memory rate limiting to absolutely guarantee no Redis connection timeouts.
+# The user issue points to the first `/request_upload` hitting an unresponsive Redis.
 limiter = Limiter(
     app=app,
     key_func=get_remote_address,
     default_limits=["200 per day", "50 per hour"],
-    storage_uri=redis_url,
+    storage_uri="memory://",
     strategy="fixed-window",
-    storage_options={"socket_connect_timeout": 5},
-    swallow_errors=True,
-    in_memory_fallback_enabled=True,
 )
 
 class User(UserMixin, db.Model):
