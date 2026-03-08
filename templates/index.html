@@ -153,7 +153,13 @@
                 let fileId;
                 try {
                     const controller = new AbortController();
-                    const timeoutId = setTimeout(() => controller.abort(), 8000); // 8 second timeout
+                    // 45 second timeout to accommodate Render free tier DB wake-ups
+                    const timeoutId = setTimeout(() => controller.abort(), 45000);
+
+                    // Inform user if the request takes more than 5 seconds (DB is likely waking up)
+                    const wakeupTimeoutId = setTimeout(() => {
+                        statusLabel.innerText = `Waking up database for ${file.name}... (This can take up to 30s)`;
+                    }, 5000);
 
                     const reqResponse = await fetch('/request_upload', {
                         method: 'POST',
@@ -165,6 +171,7 @@
                         signal: controller.signal
                     });
                     clearTimeout(timeoutId);
+                    clearTimeout(wakeupTimeoutId);
 
                     const reqData = await reqResponse.json();
                     if (!reqResponse.ok) throw new Error(reqData.error || 'Request failed');

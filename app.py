@@ -310,8 +310,10 @@ def index():
                 except: ut = datetime.now()
             
             if f.is_permanent == 1 or ut > limit_time:
-                f.upload_time = ut # Patch in-memory for template
-                files.append(f)
+                # Ghost File Protection: Check if the file actually exists on disk before showing it
+                if os.path.exists(os.path.join(app.config['UPLOAD_FOLDER'], f.id)):
+                    f.upload_time = ut # Patch in-memory for template
+                    files.append(f)
                 
     except Exception:
         logger.exception("Index route failure")
