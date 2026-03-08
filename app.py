@@ -1,7 +1,7 @@
 from gevent import monkey
-monkey.patch_all()
-
-# Patch psycopg2 for gevent
+# Exclude DNS from monkey patching to rely on the robust native OS resolver 
+# for internal Docker/Render hostnames (prevents "Name or service not known" errors).
+monkey.patch_all(dns=False)
 try:
     from psycogreen.gevent import patch_psycopg
     patch_psycopg()

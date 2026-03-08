@@ -68,6 +68,12 @@
         <button onclick="window.location.reload()" class="btn btn-retry">Retry Connection</button>
         <div class="mt-4 small text-muted">Error Code: DNS_RESOLUTION_DELAY</div>
     </div>
+    <script>
+        // Auto-refresh every 5 seconds while waiting for the database to wake up
+        setTimeout(function () {
+            window.location.reload();
+        }, 5000);
+    </script>
 </body>
 
 </html>
