@@ -122,7 +122,6 @@ else:
 limiter = Limiter(
     app=app,
     key_func=get_remote_address,
-    default_limits=["200 per day", "50 per hour"],
     storage_uri="memory://",
     strategy="fixed-window",
 )
@@ -263,6 +262,8 @@ def handle_too_large(e):
 
 @app.errorhandler(429)
 def ratelimit_handler(e):
+    if request.path.startswith('/request_upload') or request.path.startswith('/upload_chunk'):
+        return {"error": "Rate limit exceeded. Please wait a minute."}, 429
     flash('Rate limit exceeded.')
     return redirect(url_for('index'))
 
