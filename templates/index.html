@@ -152,13 +152,9 @@
                 statusLabel.innerText = `Requesting ID for ${file.name}...`;
                 let fileId;
                 try {
-                    const controller = new AbortController();
-                    // 45 second timeout to accommodate Render free tier DB wake-ups
-                    const timeoutId = setTimeout(() => controller.abort(), 45000);
-
                     // Inform user if the request takes more than 5 seconds (DB is likely waking up)
                     const wakeupTimeoutId = setTimeout(() => {
-                        statusLabel.innerText = `Waking up database for ${file.name}... (This can take up to 30s)`;
+                        statusLabel.innerText = `Waking up database for ${file.name}... (This can take up to 60s)`;
                     }, 5000);
 
                     const reqResponse = await fetch('/request_upload', {
@@ -167,19 +163,14 @@
                             'Content-Type': 'application/json',
                             'X-CSRFToken': csrfToken
                         },
-                        body: JSON.stringify({ filename: file.name }),
-                        signal: controller.signal
+                        body: JSON.stringify({ filename: file.name })
                     });
-                    clearTimeout(timeoutId);
                     clearTimeout(wakeupTimeoutId);
 
                     const reqData = await reqResponse.json();
                     if (!reqResponse.ok) throw new Error(reqData.error || 'Request failed');
                     fileId = reqData.file_id;
                 } catch (error) {
-                    if (error.name === 'AbortError') {
-                        error.message = "The server is taking too long to respond. Render free-tier databases may take 30s to wake up. Please try again in a minute.";
-                    }
                     // Suppress alert if the error is due to user reloading the page (fetch abort)
                     if (error.name === 'TypeError' && error.message === 'Failed to fetch') {
                         console.warn("Upload request aborted (likely due to page reload).");
