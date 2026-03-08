@@ -1,7 +1,6 @@
 from gevent import monkey
-# Exclude DNS from monkey patching to rely on the robust native OS resolver 
-# for internal Docker/Render hostnames (prevents "Name or service not known" errors).
-monkey.patch_all(dns=False)
+# Use standard gevent patching, fully enabling c-ares DNS which allows non-blocking resolution.
+monkey.patch_all()
 try:
     from psycogreen.gevent import patch_psycopg
     patch_psycopg()
@@ -49,10 +48,11 @@ app.config['MAX_CONTENT_LENGTH'] = 1024 * 1024 * 1024
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'super-secret-key')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
-# Robust Engine Options
+# Robust Engine Options: Add strict timeouts so connections never permanently freeze
 app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
     "pool_pre_ping": True,
     "pool_recycle": 300,
+    "pool_timeout": 5, # Fail fast instead of hanging up to 30 seconds waiting for connection
 }
 
 # Configure logging
@@ -67,16 +67,33 @@ def get_safe_url(url):
     except: pass
     return url
 
-# --- STRICT DATABASE CONFIGURATION ---
+# --- DATABASE FALLBACK LOGIC ---
 db_url = os.getenv('DATABASE_URL')
+db_fallback = False
 
-if not db_url:
+if db_url:
+    try:
+        # Enforce connection timeout on strictly postgres URLs to prevent TCP hangs
+        if db_url.startswith("postgres"):
+            if "?" in db_url:
+                db_url += "&connect_timeout=3"
+            else:
+                db_url += "?connect_timeout=3"
+                
+        hostname = urlparse(db_url).hostname
+        if hostname and hostname != 'localhost':
+            logger.info(f"Testing DNS for database host: {hostname}")
+            socket.gethostbyname(hostname)
+            logger.info("DNS resolution successful.")
+    except Exception as e:
+        logger.warning(f"Database host unreachable via DNS: {e}. Falling back to SQLite.")
+        db_fallback = True
+
+if not db_url or db_fallback:
     # Use 4 slashes for absolute path on Linux/Docker
     app.config['SQLALCHEMY_DATABASE_URI'] = f"sqlite:///{os.path.join(INSTANCE_DIR, 'files.db')}"
-    logger.info("No DATABASE_URL found. Using local SQLite storage (fallback).")
+    logger.info("Using local SQLite storage (fallback).")
 else:
-    # In Gevent heavily concurrent environments, DNS resolution should be delegated to the raw socket at connect time
-    # rather than globally blocking the worker initialization pool.
     app.config['SQLALCHEMY_DATABASE_URI'] = db_url
 
 logger.info(f"SQLALCHEMY_DATABASE_URI: {get_safe_url(app.config['SQLALCHEMY_DATABASE_URI'])}")
