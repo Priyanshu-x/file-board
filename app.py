@@ -199,6 +199,9 @@ def delete_expired_files():
                 
         except Exception:
             logger.exception("Scheduled deletion failed unexpectedly")
+        finally:
+            # MUST manually teardown session in background threads to avoid connection leaks
+            db.session.remove()
 
 scheduler = BackgroundScheduler()
 scheduler.add_job(delete_expired_files, 'interval', minutes=1)
@@ -370,6 +373,9 @@ def assemble_file_async(file_id, filename, total_chunks, chunk_dir):
             logger.error(f"Assembly [Async]: Failed for {file_id}: {e}")
             if os.path.exists(final_path): os.remove(final_path)
             socketio.emit('assembly_error', {'file_id': file_id, 'error': str(e)})
+        finally:
+            # MUST manually teardown session to return DB connection back to pool
+            db.session.remove()
 
 @app.route('/upload_chunk', methods=['POST'])
 @limiter.limit("200 per minute")
