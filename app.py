@@ -161,9 +161,16 @@ def delete_expired_files():
             
             try:
                 limit_time = datetime.now() - timedelta(minutes=15)
-                # Fetching all non-permanent to be type-safe during schema transition
-                all_files = File.query.filter_by(is_permanent=0).all()
-                for file_obj in all_files:
+                # Type-agnostic filtering for SQLite/Postgres compat
+                all_files = File.query.all()
+                files_to_check = [f for f in all_files if f.is_permanent == 0]
+            except Exception as e:
+                # During cold boots on Render, this will throw a DNS error gracefully
+                logger.warning(f"Cleanup skipped: Database not ready ({e})")
+                return
+            
+            try:
+                for file_obj in files_to_check:
                     ut = file_obj.upload_time
                     if isinstance(ut, str):
                         try: ut = datetime.fromisoformat(ut)
@@ -226,23 +233,6 @@ def run_migrations():
 
 with app.app_context():
     try:
-        # Enforce hard DNS resolution block before allowing SQLAlchemy engine to initialize
-        if db_url:
-            hostname = urlparse(db_url).hostname
-            if hostname and hostname != 'localhost':
-                import time
-                max_retries = 30
-                for _ in range(max_retries):
-                    try:
-                        socket.gethostbyname(hostname)
-                        logger.info("DNS verified. Database is reachable.")
-                        break
-                    except socket.gaierror:
-                        logger.warning(f"Waiting for database DNS ({hostname}) to resolve...")
-                        time.sleep(2)
-                else:
-                    logger.critical(f"FATAL: Database DNS failed to resolve after {max_retries * 2} seconds.")
-                    
         db.create_all()
         run_migrations()
         # Ensure admin user exists and password matches current env var
@@ -284,12 +274,18 @@ def ratelimit_handler(e):
 
 @app.errorhandler(Exception)
 def handle_exception(e):
+    from werkzeug.exceptions import HTTPException
+    # Pass through standard HTTP errors (like 404 for favicon) without dumping 500 stacktraces
+    if isinstance(e, HTTPException):
+        return e
+
     from sqlalchemy.exc import OperationalError
     if isinstance(e, OperationalError):
-        logger.error(f"Database connection error: {e}")
+        logger.warning(f"Database connection not yet established (sleeping DB).")
         if request.path.startswith('/request_upload') or request.path.startswith('/upload_chunk'):
             return {"error": "Database error"}, 503
         return render_template('db_error.html'), 503
+        
     logger.error(f"Unhandled exception: {e}", exc_info=True)
     if request.path.startswith('/request_upload') or request.path.startswith('/upload_chunk') or request.is_json:
         return {"error": str(e)}, 500
@@ -317,8 +313,8 @@ def index():
                     f.upload_time = ut # Patch in-memory for template
                     files.append(f)
                 
-    except Exception:
-        logger.exception("Index route failure")
+    except Exception as e:
+        logger.warning(f"Index route serving waking-up screen: {e}")
         return render_template('db_error.html'), 503
         
     return render_template('index.html', files=files, form=UploadForm())
