@@ -74,10 +74,12 @@ if not db_url:
     
 # Enforce connection timeout on strictly postgres URLs to prevent infinite hangs
 if db_url and db_url.startswith("postgres"):
+    # keepalives: detect dead connections quickly (idle 10s + 3 probes * 5s = 25s detection)
+    pq_opts = "connect_timeout=10&keepalives=1&keepalives_idle=10&keepalives_interval=5&keepalives_count=3"
     if "?" in db_url:
-        db_url += "&connect_timeout=10"
+        db_url += f"&{pq_opts}"
     else:
-        db_url += "?connect_timeout=10"
+        db_url += f"?{pq_opts}"
 
 app.config['SQLALCHEMY_DATABASE_URI'] = db_url
 
