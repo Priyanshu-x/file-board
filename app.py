@@ -82,6 +82,12 @@ if db_url and db_url.startswith("postgres"):
         db_url += f"?{pq_opts}"
 
 app.config['SQLALCHEMY_DATABASE_URI'] = db_url
+app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
+    'pool_pre_ping': True,      # Test connections before use; instantly discard zombies
+    'pool_recycle': 280,         # Recycle connections before Render's 5-min idle kill
+    'pool_size': 3,              # Small pool to avoid exhausting free-tier connection limits
+    'max_overflow': 2,
+}
 
 logger.info(f"SQLALCHEMY_DATABASE_URI: {get_safe_url(app.config['SQLALCHEMY_DATABASE_URI'])}")
 
@@ -163,15 +169,19 @@ def delete_expired_files():
             
             try:
                 limit_time = datetime.now() - timedelta(minutes=15)
-                # Type-agnostic filtering for SQLite/Postgres compat
+                # Set a short statement timeout so this query can NEVER block the pool
+                from sqlalchemy import text
+                db.session.execute(text("SET statement_timeout = '15s'"))
                 all_files = File.query.all()
                 files_to_check = [f for f in all_files if f.is_permanent == 0]
             except Exception as e:
                 # During cold boots on Render, this will throw a DNS error gracefully
                 logger.warning(f"Cleanup skipped: Database not ready ({e})")
+                db.session.rollback()
                 return
             
             try:
+                deleted_count = 0
                 for file_obj in files_to_check:
                     ut = file_obj.upload_time
                     if isinstance(ut, str):
@@ -191,9 +201,11 @@ def delete_expired_files():
                             
                         db.session.delete(file_obj)
                         socketio.emit('file_deleted', {'id': file_obj.id})
+                        deleted_count += 1
                 
                 db.session.commit()
-                logger.info("Cleanup: Atomic transaction complete.")
+                if deleted_count > 0:
+                    logger.info(f"Cleanup: Deleted {deleted_count} expired file(s).")
             finally:
                 if os.path.exists(lock_file): os.remove(lock_file)
                 
@@ -206,7 +218,7 @@ def delete_expired_files():
 def background_cleanup_loop():
     import gevent
     while True:
-        gevent.sleep(60)
+        gevent.sleep(300)  # Every 5 min (files expire at 15m; no need to check every minute)
         delete_expired_files()
 
 import gevent
