@@ -67,34 +67,19 @@ def get_safe_url(url):
     except: pass
     return url
 
-# --- DATABASE FALLBACK LOGIC ---
+# --- STRICT DATABASE CONNECTION ---
 db_url = os.getenv('DATABASE_URL')
-db_fallback = False
+if not db_url:
+    logger.critical("FATAL: DATABASE_URL is not set!")
+    
+# Enforce connection timeout on strictly postgres URLs to prevent infinite hangs
+if db_url and db_url.startswith("postgres"):
+    if "?" in db_url:
+        db_url += "&connect_timeout=10"
+    else:
+        db_url += "?connect_timeout=10"
 
-if db_url:
-    try:
-        # Enforce connection timeout on strictly postgres URLs to prevent TCP hangs
-        if db_url.startswith("postgres"):
-            if "?" in db_url:
-                db_url += "&connect_timeout=3"
-            else:
-                db_url += "?connect_timeout=3"
-                
-        hostname = urlparse(db_url).hostname
-        if hostname and hostname != 'localhost':
-            logger.info(f"Testing DNS for database host: {hostname}")
-            socket.gethostbyname(hostname)
-            logger.info("DNS resolution successful.")
-    except Exception as e:
-        logger.warning(f"Database host unreachable via DNS: {e}. Falling back to SQLite.")
-        db_fallback = True
-
-if not db_url or db_fallback:
-    # Use 4 slashes for absolute path on Linux/Docker
-    app.config['SQLALCHEMY_DATABASE_URI'] = f"sqlite:///{os.path.join(INSTANCE_DIR, 'files.db')}"
-    logger.info("Using local SQLite storage (fallback).")
-else:
-    app.config['SQLALCHEMY_DATABASE_URI'] = db_url
+app.config['SQLALCHEMY_DATABASE_URI'] = db_url
 
 logger.info(f"SQLALCHEMY_DATABASE_URI: {get_safe_url(app.config['SQLALCHEMY_DATABASE_URI'])}")
 
@@ -326,13 +311,9 @@ def index():
 def request_upload():
     logger.info("TRACE: /request_upload hitting endpoint.")
     try:
-        if not request.is_json:
-            return {"error": "Request must be JSON"}, 400
-        data = request.get_json()
-        if not data:
-            return {"error": "Invalid or missing JSON body"}, 400
-        filename = secure_filename(data.get('filename'))
-        if not filename: return {"error": "Missing filename"}, 400
+        # Use FormData to bypass complex Nginx proxy buffer waiting issues with arbitrary JSON
+        filename = secure_filename(request.form.get('filename', ''))
+        if not filename: return {"error": "Missing filename in form data"}, 400
         
         # Disk Quota Check
         logger.info(f"TRACE: Checking disk space for {filename}")

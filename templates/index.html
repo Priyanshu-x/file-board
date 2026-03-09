@@ -157,13 +157,15 @@
                         statusLabel.innerText = `Waking up database for ${file.name}... (This can take up to 60s)`;
                     }, 5000);
 
+                    const reqFormData = new FormData();
+                    reqFormData.append('filename', file.name);
+
                     const reqResponse = await fetch('/request_upload', {
                         method: 'POST',
                         headers: {
-                            'Content-Type': 'application/json',
                             'X-CSRFToken': csrfToken
                         },
-                        body: JSON.stringify({ filename: file.name })
+                        body: reqFormData
                     });
                     clearTimeout(wakeupTimeoutId);
 
