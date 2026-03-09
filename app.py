@@ -226,6 +226,23 @@ def run_migrations():
 
 with app.app_context():
     try:
+        # Enforce hard DNS resolution block before allowing SQLAlchemy engine to initialize
+        if db_url:
+            hostname = urlparse(db_url).hostname
+            if hostname and hostname != 'localhost':
+                import time
+                max_retries = 30
+                for _ in range(max_retries):
+                    try:
+                        socket.gethostbyname(hostname)
+                        logger.info("DNS verified. Database is reachable.")
+                        break
+                    except socket.gaierror:
+                        logger.warning(f"Waiting for database DNS ({hostname}) to resolve...")
+                        time.sleep(2)
+                else:
+                    logger.critical(f"FATAL: Database DNS failed to resolve after {max_retries * 2} seconds.")
+                    
         db.create_all()
         run_migrations()
         # Ensure admin user exists and password matches current env var
