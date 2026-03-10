@@ -10,8 +10,7 @@ services:
         value: admin
       - key: ADMIN_PASS
         generateValue: true
-      - key: DATABASE_URL
-        sync: false  # Set manually in dashboard with the EXTERNAL database URL
+      # DATABASE_URL: Set manually in Render dashboard using the External Database URL
       - key: REDIS_URL
         fromService:
           type: redis
