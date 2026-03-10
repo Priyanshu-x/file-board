@@ -261,6 +261,17 @@ with app.app_context():
     except Exception as e:
         logger.error(f"Post-boot initialization failed: {e}")
 
+# --- Pool Warmup: pre-establish connections so the first user request is instant ---
+with app.app_context():
+    try:
+        from sqlalchemy import text
+        for i in range(3):  # Fill pool_size=3 connections
+            db.session.execute(text('SELECT 1'))
+        db.session.remove()  # Return connections to pool
+        logger.info("Pool warmup: 3 connections pre-established and ready.")
+    except Exception as e:
+        logger.warning(f"Pool warmup skipped (DB may still be starting): {e}")
+
 class UploadForm(FlaskForm):
     submit = SubmitField('Upload')
 
@@ -331,7 +342,9 @@ def index():
 @app.route('/request_upload', methods=['POST'])
 @limiter.limit("10 per minute")
 def request_upload():
-    logger.info("TRACE: /request_upload hitting endpoint.")
+    import time
+    req_start = time.time()
+    logger.info(f"TRACE: /request_upload hitting endpoint.")
     try:
         # Use FormData to bypass complex Nginx proxy buffer waiting issues with arbitrary JSON
         filename = secure_filename(request.form.get('filename', ''))
