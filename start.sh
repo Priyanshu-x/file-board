@@ -1,19 +1,19 @@
 #!/bin/bash
 
-# Pre-create instance directory for SQLite fallback
+# Pre-create instance directory for uploads
 mkdir -p /app/instance/uploads
 
 # Function to wait for a hostname with a timeout
 wait_for_dns() {
     local host=$1
-    local timeout=15 # Shorter timeout since app has its own fallback now
+    local timeout=15
     local elapsed=0
     
     echo "Diagnostic: Checking DNS for $host..."
     
     until python3 -c "import socket; socket.gethostbyname('$host')" &>/dev/null; do
         if [ $elapsed -ge $timeout ]; then
-            echo "DNS WARNING: $host not resolvable. Flask will use SQLite fallback."
+            echo "DNS WARNING: $host not resolvable after ${timeout}s. App will retry on its own."
             return 1
         fi
         sleep 2

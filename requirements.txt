@@ -2,12 +2,10 @@ python-socketio==5.11.4
 flask==3.0.3
 flask-wtf==1.2.1
 python-dotenv==1.0.1
-apscheduler==3.10.4
 werkzeug==3.0.4
 flask-limiter==3.13
 flask-socketio==5.3.6
 gunicorn==23.0.0
-flask-httpauth==4.8.0
 wtforms==3.1.2
 gevent>=24.2.1
 gevent-websocket==0.10.1

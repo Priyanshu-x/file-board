@@ -239,12 +239,12 @@
                         progressBar.style.width = percent + '%';
                         progressBar.innerText = percent + '%';
                     } catch (error) {
-                        console.error(error);
+                        console.error('Chunk upload error:', error);
                         if (error.name === 'TypeError' && error.message === 'Failed to fetch') {
-                            console.warn("Chunk upload aborted (likely due to page reload).");
+                            console.warn("Chunk upload aborted (likely due to page reload or network drop).");
                             return;
                         }
-                        alert('Upload failed: ' + error.message);
+                        alert('Upload failed at chunk ' + (chunkIndex + 1) + '/' + totalChunks + ': ' + error.message);
                         progressContainer.style.display = 'none';
                         dropZone.style.display = 'block';
                         submitBtn.disabled = false;

@@ -48,13 +48,6 @@ app.config['MAX_CONTENT_LENGTH'] = 1024 * 1024 * 1024
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'super-secret-key')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
-# Robust Engine Options: Add strict timeouts so connections never permanently freeze
-app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
-    "pool_pre_ping": True,
-    "pool_recycle": 300,
-    "pool_timeout": 5, # Fail fast instead of hanging up to 30 seconds waiting for connection
-}
-
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -87,6 +80,7 @@ app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
     'pool_recycle': 280,         # Recycle connections before Render's 5-min idle kill
     'pool_size': 3,              # Small pool to avoid exhausting free-tier connection limits
     'max_overflow': 2,
+    'pool_timeout': 5,           # Fail fast instead of hanging 30s waiting for a connection
 }
 
 logger.info(f"SQLALCHEMY_DATABASE_URI: {get_safe_url(app.config['SQLALCHEMY_DATABASE_URI'])}")
@@ -169,9 +163,10 @@ def delete_expired_files():
             
             try:
                 limit_time = datetime.now() - timedelta(minutes=15)
-                # Set a short statement timeout so this query can NEVER block the pool
+                # Set a short statement timeout so this query can NEVER block the pool (PostgreSQL only)
                 from sqlalchemy import text
-                db.session.execute(text("SET statement_timeout = '15s'"))
+                if 'postgresql' in str(db.engine.url):
+                    db.session.execute(text("SET statement_timeout = '15s'"))
                 all_files = File.query.all()
                 files_to_check = [f for f in all_files if f.is_permanent == 0]
             except Exception as e:
@@ -360,9 +355,6 @@ def request_upload():
         logger.error(f"FATAL TRACE: /request_upload hung or errored: {e}", exc_info=True)
         db.session.rollback()
         return {"error": "Internal server error during DB transaction."}, 500
-    finally:
-        # Guarantee session teardown for request
-        db.session.remove()
 
 def assemble_file_async(file_id, filename, total_chunks, chunk_dir):
     with app.app_context():
@@ -410,6 +402,7 @@ def assemble_file_async(file_id, filename, total_chunks, chunk_dir):
             db.session.remove()
 
 @app.route('/upload_chunk', methods=['POST'])
+@csrf.exempt           # Chunks are protected by server-issued file_id; CSRF token can expire mid-upload
 @limiter.limit("200 per minute")
 def upload_chunk():
     file_id = request.form.get('file_id')
