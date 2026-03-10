@@ -11,11 +11,9 @@ services:
       - key: ADMIN_PASS
         generateValue: true
       - key: DATABASE_URL
-        # NOTE: Override this in Render dashboard with the EXTERNAL database URL
-        # to avoid internal DNS resolution delays during cold starts.
         fromDatabase:
           name: snapdoc-db
-          property: connectionString
+          property: externalConnectionString
       - key: REDIS_URL
         fromService:
           type: redis
