@@ -161,9 +161,10 @@
                             statusLabel.innerText = `Waking up database for ${file.name}... (This can take up to 60s)`;
                         }, 5000);
 
-                        // Abort fetch after 30s so we can retry instead of hanging forever
+                        // Abort fetch after 120s to prevent infinite hangs
+                        // (server can take 30-60s on cold start, so 120s gives ample margin)
                         const controller = new AbortController();
-                        const abortTimeout = setTimeout(() => controller.abort(), 30000);
+                        const abortTimeout = setTimeout(() => controller.abort(), 120000);
 
                         const reqFormData = new FormData();
                         reqFormData.append('filename', file.name);
