@@ -460,6 +460,11 @@ def download_file(file_id):
             return redirect(url_for('index'))
         
         response = app.make_response("")
+        
+        import mimetypes
+        mimetype, _ = mimetypes.guess_type(file_obj.filename)
+        response.headers['Content-Type'] = mimetype or 'application/octet-stream'
+        
         response.headers['X-Accel-Redirect'] = f'/internal_uploads/{file_id}'
         response.headers['Content-Disposition'] = f'attachment; filename="{file_obj.filename}"'
         return response
