@@ -339,6 +339,11 @@ def index():
         
     return render_template('index.html', files=files, form=UploadForm())
 
+@app.route('/ads.txt')
+def serve_ads_txt():
+    from flask import send_from_directory
+    return send_from_directory(app.root_path, 'ads.txt')
+
 @app.route('/request_upload', methods=['POST'])
 @limiter.limit("10 per minute")
 def request_upload():
