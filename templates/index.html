@@ -61,7 +61,7 @@
             </div>
 
             <div class="drop-zone" id="dropZone">
-                <p class="m-0">Drag & drop files here or click to select</p>
+                <p class="m-0">Drag & drop files or a folder here, or click to select files</p>
                 <input type="file" name="files[]" id="fileInput" multiple style="display: none;">
             </div>
             <div class="mt-3 text-end">
@@ -92,28 +92,39 @@
 
     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.5.0/socket.io.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/moment.js/2.29.1/moment.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
     {{ moment.include_moment() }}
 
     <script>
         const dropZone = document.getElementById('dropZone');
         const fileInput = document.getElementById('fileInput');
 
+        let isFolderUpload = false;
+        let selectedFolderName = "";
+        let droppedFolderFiles = null; // Store natively read files from drag-and-drop
+
         dropZone.addEventListener('click', () => fileInput.click());
 
-        function updateDropZoneText() {
+        function updateDropZoneText(fileList) {
             const p = dropZone.querySelector('p');
-            if (fileInput.files.length > 0) {
-                if (fileInput.files.length === 1) {
-                    p.innerText = `Selected: ${fileInput.files[0].name}`;
+            if (fileList && fileList.length > 0) {
+                if (isFolderUpload) {
+                    p.innerText = `Selected Folder: ${selectedFolderName}.zip (${fileList.length} files)`;
+                } else if (fileList.length === 1) {
+                    p.innerText = `Selected: ${fileList[0].name}`;
                 } else {
-                    p.innerText = `Selected ${fileInput.files.length} files`;
+                    p.innerText = `Selected ${fileList.length} files`;
                 }
             } else {
-                p.innerText = "Drag & drop files here or click to select";
+                p.innerText = "Drag & drop files or a folder here, or click to select files";
             }
         }
 
-        fileInput.addEventListener('change', updateDropZoneText);
+        fileInput.addEventListener('change', () => {
+            isFolderUpload = false;
+            droppedFolderFiles = null;
+            updateDropZoneText(fileInput.files);
+        });
 
         ['dragover', 'dragleave', 'drop'].forEach(evt => {
             dropZone.addEventListener(evt, (e) => {
@@ -123,24 +134,131 @@
             });
         });
 
-        dropZone.addEventListener('drop', (e) => {
-            fileInput.files = e.dataTransfer.files;
-            updateDropZoneText();
+    async function readEntry(entry) {
+        if (entry.isFile) {
+            return new Promise((resolve) => {
+                entry.file(file => {
+                    file.customPath = entry.fullPath.substring(1);
+                    resolve([file]);
+                });
+            });
+            } else if (entry.isDirectory) {
+                return new Promise((resolve) => {
+                    const dirReader = entry.createReader();
+                    const entries = [];
+                    const readEntries = () => {
+                        dirReader.readEntries(async (results) => {
+                            if (!results.length) {
+                                const allFiles = await Promise.all(entries.map(readEntry));
+                                resolve(allFiles.flat());
+                            } else {
+                                entries.push(...results);
+                                readEntries(); // Continue reading
+                            }
+                        });
+                    };
+                    readEntries();
+                });
+            }
+            return [];
+        }
+
+        dropZone.addEventListener('drop', async (e) => {
+            e.preventDefault();
+            const items = e.dataTransfer.items;
+            let hasFolder = false;
+            if (items) {
+                for (let i = 0; i < items.length; i++) {
+                    if (items[i].kind === 'file' && items[i].webkitGetAsEntry) {
+                        const entry = items[i].webkitGetAsEntry();
+                        if (entry && entry.isDirectory) {
+                            hasFolder = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            
+            if (hasFolder) {
+                dropZone.querySelector('p').innerText = "Reading folder contents... Please wait.";
+                isFolderUpload = true;
+                const files = [];
+                for (let i = 0; i < items.length; i++) {
+                    if (items[i].kind === 'file' && items[i].webkitGetAsEntry) {
+                        const entry = items[i].webkitGetAsEntry();
+                        if (entry) {
+                            const entryFiles = await readEntry(entry);
+                            files.push(...entryFiles);
+                        }
+                    }
+                }
+                droppedFolderFiles = files;
+                if (files.length > 0) {
+                    const firstPath = files[0].customPath || files[0].webkitRelativePath || files[0].name;
+                    selectedFolderName = firstPath.includes('/') ? firstPath.split('/')[0] : "Folder";
+                }
+                updateDropZoneText(droppedFolderFiles);
+            } else {
+                isFolderUpload = false;
+                droppedFolderFiles = null;
+                fileInput.files = e.dataTransfer.files;
+                updateDropZoneText(fileInput.files);
+            }
         });
 
         document.getElementById('uploadForm').addEventListener('submit', async function (e) {
             e.preventDefault();
-            const files = fileInput.files;
-            if (files.length === 0) return;
-
-            const CHUNK_SIZE = 5 * 1024 * 1024;
+            
             const progressContainer = document.getElementById('progressContainer');
             const progressBar = document.getElementById('uploadProgress');
             const statusLabel = document.getElementById('uploadStatus');
             const dropZone = document.getElementById('dropZone');
-            const csrfToken = document.querySelector('input[name="csrf_token"]').value;
-
             const submitBtn = document.querySelector('button[type="submit"]');
+            const csrfToken = document.querySelector('input[name="csrf_token"]').value;
+            
+            let files = [];
+            let filesToZip = null;
+            
+            if (isFolderUpload && droppedFolderFiles) {
+                filesToZip = droppedFolderFiles;
+            }
+            
+            if (isFolderUpload && filesToZip && filesToZip.length > 0) {
+                progressContainer.style.display = 'block';
+                dropZone.style.display = 'none';
+                submitBtn.disabled = true;
+                statusLabel.innerText = "Zipping folder locally... Please wait.";
+                progressBar.style.width = '100%';
+                progressBar.innerText = "Zipping...";
+                progressBar.classList.add('pulsing-bar');
+                
+                try {
+                    const zip = new JSZip();
+                    for (let i = 0; i < filesToZip.length; i++) {
+                        const file = filesToZip[i];
+                        const filePath = file.customPath || file.webkitRelativePath || file.name;
+                        zip.file(filePath, file);
+                    }
+                    const zipBlob = await zip.generateAsync({ type: "blob" });
+                    const zipFile = new File([zipBlob], `${selectedFolderName}.zip`, { type: "application/zip" });
+                    files = [zipFile];
+                } catch (err) {
+                    alert("Error zipping folder: " + err.message);
+                    progressContainer.style.display = 'none';
+                    dropZone.style.display = 'block';
+                    submitBtn.disabled = false;
+                    progressBar.classList.remove('pulsing-bar');
+                    return;
+                }
+                progressBar.classList.remove('pulsing-bar');
+                progressBar.style.width = '0%';
+            } else {
+                files = fileInput.files;
+            }
+            
+            if (files.length === 0) return;
+
+            const CHUNK_SIZE = 5 * 1024 * 1024;
 
             progressContainer.style.display = 'block';
             dropZone.style.display = 'none';

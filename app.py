@@ -365,8 +365,19 @@ def request_upload():
         
         # Disk Quota Check
         logger.info(f"TRACE: Checking disk space for {filename}")
-        _, _, free = shutil.disk_usage(app.config['UPLOAD_FOLDER'])
-        if free < 0.5 * (1024**3): # 500MB buffer
+        MAX_STORAGE_GB = float(os.getenv('MAX_STORAGE_GB', 5.0))
+        max_storage_bytes = MAX_STORAGE_GB * 1024**3
+        
+        total_used_bytes = 0
+        for dirpath, _, filenames in os.walk(app.config['UPLOAD_FOLDER']):
+            for f in filenames:
+                fp = os.path.join(dirpath, f)
+                if not os.path.islink(fp):
+                    total_used_bytes += os.path.getsize(fp)
+                    
+        free_bytes = max_storage_bytes - total_used_bytes
+        
+        if free_bytes < 0.5 * (1024**3): # 500MB buffer
             return {"error": "Server storage full. Please try again later."}, 507
 
         logger.info(f"TRACE: Generating DB record for {filename}")
@@ -512,7 +523,9 @@ def admin_panel():
                 if not os.path.islink(fp):
                     total_used_bytes += os.path.getsize(fp)
         
-        _, _, free = shutil.disk_usage(app.config['UPLOAD_FOLDER'])
+        MAX_STORAGE_GB = float(os.getenv('MAX_STORAGE_GB', 5.0))
+        max_storage_bytes = MAX_STORAGE_GB * 1024**3
+        free_bytes = max(0, max_storage_bytes - total_used_bytes)
         
         used_mb = total_used_bytes / (1024 * 1024)
         if used_mb >= 1024:
@@ -522,7 +535,7 @@ def admin_panel():
             
         storage_info = {
             'used': used_str, 
-            'free': f'{free / (1024**3):.2f} GB (Host)'
+            'free': f'{free_bytes / (1024**3):.2f} GB'
         }
         return render_template('admin.html', files=display_files, storage_info=storage_info)
     except:

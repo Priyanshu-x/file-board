@@ -1,4 +1,5 @@
 .venv/
+venv/
 Uploads/
 files.db
 .env
