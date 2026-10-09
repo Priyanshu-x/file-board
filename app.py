@@ -64,7 +64,9 @@ def get_safe_url(url):
 db_url = os.getenv('DATABASE_URL')
 if not db_url:
     logger.critical("FATAL: DATABASE_URL is not set!")
-    
+elif db_url.startswith("postgres://"):
+    db_url = db_url.replace("postgres://", "postgresql://", 1)
+
 # Enforce connection timeout on strictly postgres URLs to prevent infinite hangs
 if db_url and db_url.startswith("postgres"):
     # keepalives: detect dead connections quickly (idle 10s + 3 probes * 5s = 25s detection)
@@ -343,6 +345,10 @@ def index():
 def serve_ads_txt():
     from flask import send_from_directory
     return send_from_directory(app.root_path, 'ads.txt')
+
+@app.route('/favicon.ico')
+def favicon():
+    return "", 204
 
 @app.route('/request_upload', methods=['POST'])
 @limiter.limit("10 per minute")
