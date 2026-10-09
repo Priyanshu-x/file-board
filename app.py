@@ -65,7 +65,9 @@ db_url = os.getenv('DATABASE_URL')
 if not db_url:
     logger.critical("FATAL: DATABASE_URL is not set!")
 elif db_url.startswith("postgres://"):
-    db_url = db_url.replace("postgres://", "postgresql://", 1)
+    db_url = db_url.replace("postgres://", "postgresql+psycopg2://", 1)
+elif db_url.startswith("postgresql://"):
+    db_url = db_url.replace("postgresql://", "postgresql+psycopg2://", 1)
 
 # Enforce connection timeout on strictly postgres URLs to prevent infinite hangs
 if db_url and db_url.startswith("postgres"):
@@ -502,8 +504,26 @@ def admin_panel():
                 'upload_time': ut,
                 'is_permanent': f.is_permanent
             })
-        _, used, free = shutil.disk_usage(app.config['UPLOAD_FOLDER'])
-        storage_info = {'used': f'{used / (1024**3):.2f} GB', 'free': f'{free / (1024**3):.2f} GB'}
+        # Calculate actual used space by the application's uploads folder
+        total_used_bytes = 0
+        for dirpath, _, filenames in os.walk(app.config['UPLOAD_FOLDER']):
+            for f in filenames:
+                fp = os.path.join(dirpath, f)
+                if not os.path.islink(fp):
+                    total_used_bytes += os.path.getsize(fp)
+        
+        _, _, free = shutil.disk_usage(app.config['UPLOAD_FOLDER'])
+        
+        used_mb = total_used_bytes / (1024 * 1024)
+        if used_mb >= 1024:
+            used_str = f'{used_mb / 1024:.2f} GB'
+        else:
+            used_str = f'{used_mb:.2f} MB'
+            
+        storage_info = {
+            'used': used_str, 
+            'free': f'{free / (1024**3):.2f} GB (Host)'
+        }
         return render_template('admin.html', files=display_files, storage_info=storage_info)
     except:
         return "Admin panel unreachable", 500
