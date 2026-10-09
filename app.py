@@ -414,6 +414,7 @@ def assemble_file_async(file_id, filename, total_chunks, chunk_dir):
             file_obj = File.query.filter_by(id=file_id).first()
             if file_obj:
                 file_obj.size_bytes = os.path.getsize(final_path)
+                file_obj.upload_time = datetime.now()
                 # Cleanup chunks from DB
                 Chunk.query.filter_by(file_id=file_id).delete()
                 db.session.commit()

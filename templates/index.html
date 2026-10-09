@@ -239,7 +239,10 @@
                         const filePath = file.customPath || file.webkitRelativePath || file.name;
                         zip.file(filePath, file);
                     }
-                    const zipBlob = await zip.generateAsync({ type: "blob" });
+                    const zipBlob = await zip.generateAsync({ 
+                        type: "blob",
+                        compression: "STORE" // Disables slow JS-based compression
+                    });
                     const zipFile = new File([zipBlob], `${selectedFolderName}.zip`, { type: "application/zip" });
                     files = [zipFile];
                 } catch (err) {
